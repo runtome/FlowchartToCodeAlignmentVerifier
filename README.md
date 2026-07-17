@@ -33,6 +33,7 @@ id_definition.csv → route by representation_type
 | `llm/prompt.py` | Rubric system prompt, flowchart/pseudocode templates, few-shot |
 | `predict.py` | Model load, self-consistency inference, submission + validation |
 | `notebook.ipynb` | Thin Kaggle entry point that calls the modules |
+| `documents/pipeline.md` | Full walkthrough of how a case flows through the code |
 
 ## Data
 

@@ -21,67 +21,124 @@ RUBRIC = """\
 You grade how well a program DESIGN (a flowchart or pseudocode) matches a Java
 SOLUTION, on this 0-3 scale:
 
-  0 = Inconsistent: clearly do not match, or they use a fundamentally different
-      approach / algorithm to solve the problem.
+  0 = Inconsistent: they do not match, OR the code uses a different algorithm /
+      control-flow STRUCTURE than the design -- even if both happen to produce the
+      same output.
   1 = Weakly consistent: some parts match, but there are several important
-      differences (missing or wrong steps, conditions, or control flow).
-  2 = Mostly consistent: the main approach matches; only minor differences or a
-      few missing details remain.
+      differences in steps, conditions, or control flow.
+  2 = Mostly consistent: the structure and steps match the design; only MINOR
+      differences remain (e.g. > vs >=, i<n vs i<=n-1, a missing detail).
   3 = Fully consistent: the concept, the steps, the conditions, and the order of
-      execution all match.
+      execution all correspond one-to-one."""
 
-Judge BEHAVIOR, not surface form:
-  - The sequence/order of operations should correspond.
-  - Conditions and branches should be equivalent.
-  - Loops should match in kind, iteration count, and stop condition.
-  - Input, computation, and output should mean the same thing.
-  - Variable names, formatting, and exact wording do NOT need to be identical if
-    the behavior is equivalent."""
+GRADING_PRINCIPLES = """\
+IMPORTANT - how to compare:
+  - You are checking whether the design and the code describe the SAME algorithm
+    STEP BY STEP: the same inputs, the same sequence of operations, the same
+    decision structure (how many decisions and what each one tests), the same
+    loops (kind, count, stop condition), and the same outputs.
+  - Producing the same final RESULT through a DIFFERENT structure is NOT full
+    consistency. Examples that should score LOW (0-1), not high:
+      * design tests "a >= b AND a >= c" in one condition, but code uses nested
+        pairwise comparisons (if a>b { if a>c ... }) -> different decision
+        structure -> mismatch.
+      * design uses chained else-if, but code uses independent unchained ifs.
+      * design loops a fixed number of times, but code uses a while with a
+        different stop condition.
+  - Differences that are only MINOR (cap the score around 2, do not force 0):
+      * > vs >=, < vs <=, or an off-by-one in a loop bound that keeps the same
+        behavior; different but equivalent variable names; formatting.
+  - Only variable names, formatting, and exact wording may differ freely. The
+    control-flow structure must genuinely correspond for a 3.
+  - Do NOT assume consistency just because both programs solve the stated problem.
+    Compare what each one ACTUALLY does, in order."""
 
-_JSON_CONTRACT = """\
-Respond with ONE JSON object and nothing else (no markdown, no prose outside it):
-{
-  "java_summary": "<ordered steps: inputs, loops (bounds+stop), branches, computation, outputs>",
-  "design_summary": "<same schema, read from the design>",
-  "dimension_findings": {
-    "input":       "match|partial|mismatch",
-    "output":      "match|partial|mismatch",
-    "order":       "match|partial|mismatch",
-    "loop":        "match|partial|mismatch",
-    "condition":   "match|partial|mismatch",
-    "computation": "match|partial|mismatch"
-  },
-  "mismatches": ["<meaningful difference>", "..."],
-  "final_score": 0
-}
-Map the findings to the rubric: all/near-all "match" -> 3; mostly match, minor
-gaps -> 2; several "mismatch"/"partial" on important axes -> 1; different
-approach or pervasive mismatch -> 0. "final_score" MUST be an integer 0, 1, 2, or 3."""
+THAI_GUIDE = """\
+The design may be written in Thai (the code is Java/English). Interpret Thai
+faithfully. Common terms:
+  เริ่มต้น = start,  สิ้นสุด = end,  รับค่า = read/input,
+  แสดงผล / แสดงค่า / พิมพ์ = print/output,  ถ้า = if,  มิฉะนั้น = else,
+  มิฉะนั้นถ้า = else if,  จบเงื่อนไข = end if,  ทำซ้ำ / วนซ้ำ = loop/repeat,
+  ตราบใด / ขณะที่ = while,  และ = and,  หรือ = or,  ไม่ = not,  กำหนดให้ = assign.
+On a flowchart, a decision diamond's "Yes"/"ใช่" branch is the condition being
+TRUE and "No"/"ไม่" is FALSE. Follow the arrows to recover the real order."""
+
+_OUTPUT_CONTRACT = """\
+First, compare the two step by step in plain text: summarize the code's algorithm,
+summarize the design's algorithm, then go through input, output, order, loop,
+condition, and computation, noting every real difference (especially structural
+ones). THEN, on the LAST line, output ONLY this JSON object (no markdown fence):
+{"dimension_findings": {"input": "match|partial|mismatch", "output": "...",
+ "order": "...", "loop": "...", "condition": "...", "computation": "..."},
+ "mismatches": ["..."], "final_score": <0|1|2|3>}
+Mapping: structure+steps correspond one-to-one -> 3; same structure with only
+minor differences -> 2; several real differences -> 1; different structure /
+algorithm or pervasive mismatch -> 0. final_score MUST be an integer 0-3."""
 
 # Persona flavor sentences for ensemble diversity (optional).
-PERSONA_STRICT = "Grade strictly: any real difference in steps, conditions, or order should pull the score down."
-PERSONA_LENIENT = "Grade for behavioral equivalence: reward matches in overall approach even if minor details differ."
+PERSONA_STRICT = "Grade strictly: any real difference in steps, conditions, or control-flow structure should pull the score down."
+PERSONA_LENIENT = "Reward genuine step-by-step correspondence, but a different control-flow structure is still a mismatch even if the output is the same."
 
 
 def system_prompt(persona: str | None = None) -> str:
     parts = [
-        "You are an expert grader of algorithmic consistency between program "
+        "You are a strict expert grader of algorithmic consistency between program "
         "designs and source code.",
         RUBRIC,
+        GRADING_PRINCIPLES,
+        THAI_GUIDE,
     ]
     if persona:
         parts.append(persona)
-    parts.append(_JSON_CONTRACT)
+    parts.append(_OUTPUT_CONTRACT)
     return "\n\n".join(parts)
 
 
 # --------------------------------------------------------------------------- #
 # Few-shot anchors
 # --------------------------------------------------------------------------- #
+# Score-consistent demonstration answers. The point of the anchors is to teach
+# the CALIBRATION (what each score feels like) and the reason-then-JSON format,
+# so the findings must agree with the score -- never "all match" for a 0.
+_ANCHOR_TEMPLATES: dict[int, tuple[str, str]] = {
+    3: (
+        "The code follows the design step by step: same inputs, same decision "
+        "structure, same order, same outputs. No real differences.",
+        '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
+        '"loop": "match", "condition": "match", "computation": "match"}, '
+        '"mismatches": [], "final_score": 3}',
+    ),
+    2: (
+        "The overall structure and steps match the design; only a minor difference "
+        "remains (e.g. an operator like > vs >= or a small detail).",
+        '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
+        '"loop": "match", "condition": "partial", "computation": "match"}, '
+        '"mismatches": ["minor operator/threshold difference"], "final_score": 2}',
+    ),
+    1: (
+        "Parts overlap, but several steps or conditions differ from the design, "
+        "so the correspondence is only weak.",
+        '{"dimension_findings": {"input": "match", "output": "partial", "order": "mismatch", '
+        '"loop": "match", "condition": "mismatch", "computation": "partial"}, '
+        '"mismatches": ["some steps/conditions differ from the design"], "final_score": 1}',
+    ),
+    0: (
+        "The code uses a different control-flow structure / algorithm than the "
+        "design (e.g. nested pairwise comparisons instead of the design's combined "
+        "conditions), even though the final result can look similar. Different "
+        "structure = inconsistent.",
+        '{"dimension_findings": {"input": "match", "output": "mismatch", "order": "mismatch", '
+        '"loop": "mismatch", "condition": "mismatch", "computation": "mismatch"}, '
+        '"mismatches": ["different decision/control-flow structure", "different algorithm"], '
+        '"final_score": 0}',
+    ),
+}
+
+
 def build_fewshot_messages(anchors: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """`anchors` = list of {representation_type, design_text, java_code,
-    java_hint, score}. We render TEXT-only anchors (even flowchart ones use a
-    short textual design description) to avoid multiple images per request."""
+    java_hint, score}. Rendered TEXT-only (even flowchart anchors use the
+    pseudocode text) to avoid multiple images per request."""
     messages: list[dict[str, Any]] = []
     for a in anchors:
         user = (
@@ -89,15 +146,10 @@ def build_fewshot_messages(anchors: list[dict[str, Any]]) -> list[dict[str, Any]
             f"JAVA SOLUTION:\n{a['java_code']}\n\n{a.get('java_hint', '')}"
         )
         messages.append({"role": "user", "content": [{"type": "text", "text": user}]})
-        # A minimal but well-formed JSON answer teaches the output shape.
-        answer = (
-            '{"java_summary": "...", "design_summary": "...", '
-            '"dimension_findings": {"input": "match", "output": "match", '
-            '"order": "match", "loop": "match", "condition": "match", '
-            '"computation": "match"}, "mismatches": [], '
-            f'"final_score": {int(a["score"])}}}'
+        reasoning, json_line = _ANCHOR_TEMPLATES[int(a["score"])]
+        messages.append(
+            {"role": "assistant", "content": [{"type": "text", "text": f"{reasoning}\n{json_line}"}]}
         )
-        messages.append({"role": "assistant", "content": [{"type": "text", "text": answer}]})
     return messages
 
 
@@ -106,10 +158,18 @@ def build_fewshot_messages(anchors: list[dict[str, Any]]) -> list[dict[str, Any]
 # --------------------------------------------------------------------------- #
 def flowchart_user_turn(image: Any, java_code: str, java_hint: str, ocr_text: str = "") -> dict[str, Any]:
     """Multimodal turn: the preprocessed flowchart image + Java + hints."""
-    text = "Grade the alignment between the FLOWCHART (image below) and the JAVA SOLUTION.\n\n"
+    text = (
+        "Grade the alignment between the FLOWCHART (image below) and the JAVA "
+        "SOLUTION. Read the flowchart carefully: node text may be in Thai, while "
+        "branch labels (Yes/No) are English. Trace the arrows to recover the exact "
+        "order and decision structure, then compare it against the code's structure.\n\n"
+    )
     if ocr_text:
         text += f"Text detected in the flowchart (OCR, may contain errors):\n{ocr_text}\n\n"
-    text += f"JAVA SOLUTION:\n{java_code}\n\n{java_hint}\n\nReturn the JSON now."
+    text += (
+        f"JAVA SOLUTION:\n{java_code}\n\n{java_hint}\n\n"
+        "Compare them step by step, then output the JSON object on the last line."
+    )
     return {
         "role": "user",
         "content": [
@@ -121,9 +181,11 @@ def flowchart_user_turn(image: Any, java_code: str, java_hint: str, ocr_text: st
 
 def pseudocode_user_turn(pseudo_text: str, java_code: str, java_hint: str) -> dict[str, Any]:
     text = (
-        "Grade the alignment between the PSEUDOCODE and the JAVA SOLUTION.\n\n"
+        "Grade the alignment between the PSEUDOCODE and the JAVA SOLUTION. The "
+        "pseudocode may be in Thai; interpret it faithfully.\n\n"
         f"PSEUDOCODE:\n{pseudo_text}\n\n"
-        f"JAVA SOLUTION:\n{java_code}\n\n{java_hint}\n\nReturn the JSON now."
+        f"JAVA SOLUTION:\n{java_code}\n\n{java_hint}\n\n"
+        "Compare them step by step, then output the JSON object on the last line."
     )
     return {"role": "user", "content": [{"type": "text", "text": text}]}
 

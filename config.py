@@ -93,7 +93,7 @@ SAMPLE_TOP_P = 0.9
 USE_OCR = True          # augment the flowchart image with detected text
 TWO_PASS = False        # transcribe flowchart -> text, then score as text
 USE_FEWSHOT = True      # prepend labeled anchors from the train CSV
-N_FEWSHOT = 3           # anchors per prompt (kept small for the T4 token budget)
+N_FEWSHOT = 4           # anchors per prompt: aim for one per score level (0/1/2/3)
 USE_PERSONAS = False    # add strict/lenient persona votes to the ensemble
 
 VALID_SCORES = (0, 1, 2, 3)

@@ -193,14 +193,15 @@ _LOOSE_RE = re.compile(r"\b([0-3])\b")
 
 
 def parse_score(text: str) -> int | None:
-    """Pull final_score from the model output. Try JSON, then regex, then a
-    last-resort scan of the tail. Returns None if nothing valid is found."""
-    m = _SCORE_RE.search(text)
-    if m:
-        return int(m.group(1))
-    # Try to locate a JSON object and parse it.
-    start = text.find("{")
+    """Pull final_score from the model output. The model reasons first and emits
+    the JSON last, so prefer the LAST match. Try the explicit key, then a JSON
+    object, then a last-resort scan of the tail. None if nothing valid is found."""
+    matches = _SCORE_RE.findall(text)
+    if matches:
+        return int(matches[-1])
+    # Try to locate the last JSON object and parse it.
     end = text.rfind("}")
+    start = text.rfind("{", 0, end) if end != -1 else -1
     if start != -1 and end != -1 and end > start:
         try:
             obj = json.loads(text[start : end + 1])
