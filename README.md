@@ -36,38 +36,52 @@ id_definition.csv → route by representation_type
 
 ## Data
 
-The competition data is **not committed** (see `.gitignore`). Place it locally under
-`datasets/` (any nesting works — case discovery is recursive) or point `ALIGN_DATA_DIR`
-at its location. On Kaggle, attach it as a competition/dataset input instead.
+The ~2 MB sample dataset **is committed** under `datasets/` so `git clone` + validation
+works out of the box (any nesting is fine — case discovery is recursive):
 
-## Running on Kaggle (internet OFF)
-
-1. **Attach the model**: add *Qwen2.5-VL-7B-Instruct* as a Kaggle **Model** input.
-   Set `ALIGN_MODEL_DIR` (or edit `config.MODEL_DIR`) to the snapshot folder that
-   contains `config.json`.
-2. **Attach this code** as a Kaggle **Dataset**, or paste the modules into the
-   notebook. Set `ALIGN_DATA_DIR` to the competition data mount.
-3. Run `notebook.ipynb`. It writes `/kaggle/working/submission.csv`
-   (columns `Id,Alignment_score`).
-
-Local dry run against a sample folder with the same layout:
-
-```bash
-export ALIGN_DATA_DIR=/path/to/sample
-export ALIGN_MODEL_DIR=/path/to/qwen2.5-vl-7b
-python predict.py --dry-run 3     # first 3 rows, verbose
-python predict.py --validate      # exact accuracy + confusion matrix on train
-python predict.py                 # full submission
+```
+datasets/
+  alignment_score_training.csv   # train labels (case_id, representation_type, alignment_score)
+  id_definition.csv              # test rows   (Id, Case_id, Representation_type)
+  sample_submission.csv          # submission template (Id, Alignment_score)
+  training/training/case_XX/{flowchart.png, pseudo.txt, solution.java}
+  test/test/case_XX/{flowchart.png, pseudo.txt, solution.java}
 ```
 
-## T4 (Turing) gotchas — already handled in `config.py`
+To use a different data location (e.g. a Kaggle dataset mount), set `ALIGN_DATA_DIR`.
 
-- **No bfloat16** → `torch_dtype=float16`.
-- **No FlashAttention-2** → `attn_implementation="sdpa"`.
+## Running on Kaggle (internet ON, GPU T4 ×2)
+
+In the notebook sidebar: **Accelerator = GPU T4 x2**, **Internet = On**. Then run
+`notebook.ipynb`, which does:
+
+```python
+!git clone https://github.com/<you>/FlowchartToCodeAlignmentVerifier.git
+%cd FlowchartToCodeAlignmentVerifier
+!pip install -q -U transformers accelerate qwen-vl-utils javalang
+!python predict.py --validate     # train accuracy (%), downloads the model first run
+!python predict.py                # writes /kaggle/working/submission.csv
+```
+
+The model (`Qwen/Qwen2.5-VL-7B-Instruct`, ~16 GB) downloads from Hugging Face on the
+first call. No API keys and no attached-model step needed.
+
+Local runs work the same way:
+
+```bash
+python predict.py --validate --dry-run 4   # first 4 rows, verbose
+python predict.py --validate               # exact-match % accuracy + confusion matrix
+python predict.py                          # full submission -> submission.csv
+```
+
+## Hardware notes — already handled in `config.py`
+
+- **T4 has no bfloat16** → `torch_dtype=float16`.
+- **T4 has no FlashAttention-2** → `attn_implementation="sdpa"`.
 - **16 GB/GPU** → `device_map="auto"` with `max_memory` head-room; flip
   `LOAD_IN_4BIT=True` (bitsandbytes, ~7 GB) if fp16 + image tokens OOM.
-- **Internet off** → `HF_HUB_OFFLINE=1` / `TRANSFORMERS_OFFLINE=1` set on import;
-  load the model from a local path only.
+- **Internet on by default**; set `ALIGN_OFFLINE=1` + a local `ALIGN_MODEL_DIR` for an
+  offline run.
 - Visual tokens capped via processor `min_pixels`/`max_pixels`.
 
 ## Tuning knobs (in `config.py`)

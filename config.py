@@ -24,8 +24,11 @@ from pathlib import Path
 #
 # The competition sometimes ships train and test cases under a single `cases/`
 # directory instead of split train/test folders; CASE_SEARCH_DIRS lists every
-# place we will look for a `case_xx` folder.
-DATA_DIR = Path(os.environ.get("ALIGN_DATA_DIR", "/kaggle/input/flowchart-to-code"))
+# place we will look for a `case_xx` folder (search is recursive, so extra
+# nesting like training/training/ or test/test/ is handled automatically).
+# Default: the `datasets/` folder inside the cloned repo. Override with
+# ALIGN_DATA_DIR to point at a Kaggle dataset mount.
+DATA_DIR = Path(os.environ.get("ALIGN_DATA_DIR", "datasets"))
 
 TRAIN_CSV = DATA_DIR / "alignment_score_training.csv"
 ID_DEFINITION_CSV = DATA_DIR / "id_definition.csv"
@@ -52,13 +55,13 @@ SUBMISSION_PATH = OUTPUT_DIR / "submission.csv"
 # --------------------------------------------------------------------------- #
 # Model
 # --------------------------------------------------------------------------- #
-# Attach the model as a Kaggle *Model* or *Dataset* input and point MODEL_DIR at
-# the mounted snapshot folder (the one containing config.json). Because the
-# competition notebook has no internet, we must load from a local path.
-MODEL_DIR = os.environ.get(
-    "ALIGN_MODEL_DIR",
-    "/kaggle/input/qwen2.5-vl-7b-instruct/transformers/default/1",
-)
+# With internet ON (default), MODEL_DIR is a Hugging Face repo id and the weights
+# download on first use. For an offline run, set OFFLINE=1 and point MODEL_DIR at
+# a local snapshot folder (the one containing config.json).
+MODEL_DIR = os.environ.get("ALIGN_MODEL_DIR", "Qwen/Qwen2.5-VL-7B-Instruct")
+
+# Internet on by default. Set ALIGN_OFFLINE=1 to force HF offline mode.
+OFFLINE = os.environ.get("ALIGN_OFFLINE", "0") == "1"
 
 # T4 = Turing: no bfloat16, no FlashAttention-2.
 TORCH_DTYPE = "float16"
@@ -97,8 +100,13 @@ VALID_SCORES = (0, 1, 2, 3)
 DEFAULT_FALLBACK_SCORE = 1  # used only if every parse + retry fails
 
 # --------------------------------------------------------------------------- #
-# Offline env — import this module early so these are set before HF loads.
+# HF env — import this module early so these are set before transformers loads.
+# Internet-on by default; only force offline mode when explicitly requested.
 # --------------------------------------------------------------------------- #
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+if OFFLINE:
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+else:
+    os.environ["HF_HUB_OFFLINE"] = "0"
+    os.environ["TRANSFORMERS_OFFLINE"] = "0"

@@ -335,23 +335,41 @@ def run_submission(judge: Judge, fewshot, dry_run: int | None = None) -> pd.Data
     return sub
 
 
-def run_validation(judge: Judge, fewshot) -> None:
+def run_validation(judge: Judge, fewshot, dry_run: int | None = None) -> float:
     df = pd.read_csv(C.TRAIN_CSV)
-    y_true, y_pred = [], []
+    if dry_run is not None:
+        df = df.head(dry_run)
+    y_true, y_pred, y_rep = [], [], []
     for _, row in df.iterrows():
         case_id = str(row["case_id"])
         rep = str(row["representation_type"]).strip().lower()
         try:
             case_dir = find_case_dir(case_id)
         except FileNotFoundError:
+            print(f"  (skip {case_id}: folder not found)")
             continue
         pred = score_case(judge, fewshot, representation_type=rep, case_dir=case_dir)
-        y_true.append(int(row["alignment_score"]))
+        t = int(row["alignment_score"])
+        y_true.append(t)
         y_pred.append(int(pred))
-        print(f"{case_id} ({rep}): true={row['alignment_score']} pred={pred}")
+        y_rep.append(rep)
+        mark = "OK " if t == pred else "XX "
+        print(f"{mark}{case_id} ({rep}): true={t} pred={pred}")
 
-    acc = sum(int(a == b) for a, b in zip(y_true, y_pred)) / max(len(y_true), 1)
-    print(f"\nExact-match accuracy: {acc:.3f}  (n={len(y_true)})")
+    n = max(len(y_true), 1)
+    correct = sum(int(a == b) for a, b in zip(y_true, y_pred))
+    acc = correct / n
+    print("\n" + "=" * 40)
+    print(f"EXACT-MATCH ACCURACY: {acc * 100:.1f}%   ({correct}/{len(y_true)})")
+
+    # Per-representation-type accuracy (flowchart vs pseudocode).
+    for rep in ("flowchart", "pseudocode"):
+        idx = [i for i, r in enumerate(y_rep) if r == rep]
+        if idx:
+            c = sum(int(y_true[i] == y_pred[i]) for i in idx)
+            print(f"  {rep:<11}: {c / len(idx) * 100:.1f}%   ({c}/{len(idx)})")
+    print("=" * 40)
+
     # 4x4 confusion matrix.
     cm = [[0] * 4 for _ in range(4)]
     for a, b in zip(y_true, y_pred):
@@ -360,6 +378,7 @@ def run_validation(judge: Judge, fewshot) -> None:
     print("      p0  p1  p2  p3")
     for t in range(4):
         print(f"  t{t}  " + " ".join(f"{cm[t][p]:3d}" for p in range(4)))
+    return acc
 
 
 def main() -> None:
@@ -372,7 +391,7 @@ def main() -> None:
     judge = Judge()
 
     if args.validate:
-        run_validation(judge, fewshot)
+        run_validation(judge, fewshot, dry_run=args.dry_run)
         return
 
     sub = run_submission(judge, fewshot, dry_run=args.dry_run)
