@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import re
 from collections import Counter
 from pathlib import Path
@@ -346,13 +347,39 @@ def score_case(
 # --------------------------------------------------------------------------- #
 # Runners
 # --------------------------------------------------------------------------- #
-def run_submission(judge: Judge, fewshot, dry_run: int | None = None) -> pd.DataFrame:
+def _limit_rows(df: pd.DataFrame, dry_run: int | None, random_sample: bool, seed: int | None) -> pd.DataFrame:
+    """Trim to `dry_run` rows. With `random_sample`, first reorder by a random
+    CASE order (keeping each case's flowchart+pseudocode rows together and in
+    their original order), so `--dry-run 6` picks 3 random folders, not the first
+    3. The seed is printed so a run can be reproduced."""
+    if random_sample:
+        if seed is None:
+            seed = random.randrange(1_000_000)
+        print(f"[random dry-run] seed={seed}  (reuse with --seed {seed})")
+        cases = list(dict.fromkeys(df["case_id"].tolist()))  # unique, keep order
+        random.Random(seed).shuffle(cases)
+        rank = {c: i for i, c in enumerate(cases)}
+        df = (
+            df.assign(_ord=df["case_id"].map(rank))
+            .sort_values("_ord", kind="stable")
+            .drop(columns="_ord")
+            .reset_index(drop=True)
+        )
+    if dry_run is not None:
+        df = df.head(dry_run)
+    return df
+
+
+def run_submission(
+    judge: Judge, fewshot, dry_run: int | None = None,
+    random_sample: bool = False, seed: int | None = None,
+) -> pd.DataFrame:
     ids = pd.read_csv(C.ID_DEFINITION_CSV)
     ids.columns = [c.strip().lower() for c in ids.columns]  # Id/Case_id/Representation_type
+    ids = _limit_rows(ids, dry_run, random_sample, seed)
     rows = []
-    n = len(ids) if dry_run is None else min(dry_run, len(ids))
-    for i in range(n):
-        row = ids.iloc[i]
+    n = len(ids)
+    for i, (_, row) in enumerate(ids.iterrows()):
         case_id = str(row["case_id"])
         rep = str(row["representation_type"]).strip().lower()
         case_dir = find_case_dir(case_id)
@@ -368,10 +395,12 @@ def run_submission(judge: Judge, fewshot, dry_run: int | None = None) -> pd.Data
     return sub
 
 
-def run_validation(judge: Judge, fewshot, dry_run: int | None = None) -> float:
+def run_validation(
+    judge: Judge, fewshot, dry_run: int | None = None,
+    random_sample: bool = False, seed: int | None = None,
+) -> float:
     df = pd.read_csv(C.TRAIN_CSV)
-    if dry_run is not None:
-        df = df.head(dry_run)
+    df = _limit_rows(df, dry_run, random_sample, seed)
     y_true, y_pred, y_rep = [], [], []
     for _, row in df.iterrows():
         case_id = str(row["case_id"])
@@ -417,17 +446,19 @@ def run_validation(judge: Judge, fewshot, dry_run: int | None = None) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--validate", action="store_true", help="score labeled train set")
-    ap.add_argument("--dry-run", type=int, default=None, metavar="N", help="run first N rows, verbose")
+    ap.add_argument("--dry-run", type=int, default=None, metavar="N", help="run only N rows, verbose")
+    ap.add_argument("--random", action="store_true", help="with --dry-run, pick random cases (folders) instead of the first ones")
+    ap.add_argument("--seed", type=int, default=None, help="seed for --random (reproducible sampling)")
     args = ap.parse_args()
 
     fewshot = build_fewshot()
     judge = Judge()
 
     if args.validate:
-        run_validation(judge, fewshot, dry_run=args.dry_run)
+        run_validation(judge, fewshot, dry_run=args.dry_run, random_sample=args.random, seed=args.seed)
         return
 
-    sub = run_submission(judge, fewshot, dry_run=args.dry_run)
+    sub = run_submission(judge, fewshot, dry_run=args.dry_run, random_sample=args.random, seed=args.seed)
     C.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     sub.to_csv(C.SUBMISSION_PATH, index=False)
     print(f"\nWrote {len(sub)} rows -> {C.SUBMISSION_PATH}")

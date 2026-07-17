@@ -71,10 +71,16 @@ first call. No API keys and no attached-model step needed.
 Local runs work the same way:
 
 ```bash
-python predict.py --validate --dry-run 4   # first 4 rows, verbose
-python predict.py --validate               # exact-match % accuracy + confusion matrix
-python predict.py                          # full submission -> submission.csv
+python predict.py --validate --dry-run 4              # first 4 rows, verbose
+python predict.py --validate --dry-run 6 --random     # 3 RANDOM folders (6 rows), verbose
+python predict.py --validate --dry-run 6 --random --seed 42   # reproducible random pick
+python predict.py --validate                          # exact-match % accuracy + confusion matrix
+python predict.py                                     # full submission -> submission.csv
 ```
+
+`--dry-run N` runs only N rows; since each case has a flowchart + a pseudocode row, `N=6` is
+3 folders. `--random` picks those folders at random (whole cases, both rows) instead of always
+case_01–03, and prints the seed so you can reproduce a run with `--seed`.
 
 ## Hardware notes — already handled in `config.py`
 
