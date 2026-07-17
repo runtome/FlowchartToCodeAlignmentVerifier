@@ -82,6 +82,50 @@ python predict.py                                     # full submission -> submi
 3 folders. `--random` picks those folders at random (whole cases, both rows) instead of always
 case_01–03, and prints the seed so you can reproduce a run with `--seed`.
 
+## Debugging in the Kaggle notebook (see OCR + Mermaid per case)
+
+Set `ALIGN_DEBUG_OCR=1` and `ALIGN_DEBUG_MERMAID=1` to print, per flowchart, the text OCR read
+and the Mermaid the VLM produced — plus (with `--dry-run`) each baseline's vote. On Kaggle a
+notebook cell runs shell commands with `!`, and there are two ways to set the env vars:
+
+**Option 1 — inline on the same line (simplest):**
+
+```python
+!ALIGN_DEBUG_OCR=1 ALIGN_DEBUG_MERMAID=1 python predict.py --validate --dry-run 6
+```
+
+**Option 2 — a Python cell first, then run (the vars persist for later `!` cells):**
+
+```python
+import os
+os.environ["ALIGN_DEBUG_OCR"] = "1"
+os.environ["ALIGN_DEBUG_MERMAID"] = "1"
+```
+```python
+!python predict.py --validate --dry-run 6
+```
+
+Either way you get lines like:
+
+```
+ocr:case_01/flowchart.png : "เริ่มต้น | รับค่า a, b, c | a >= b และ a >= c | Yes | No | ..."
+mermaid:case_01/flowchart.png : "flowchart TD ; S([start]) --> I[/read a,b,c/] ; I --> D1{...}"
+  [A/base greedy] -> 3  ::  reason...
+  [B/mermaid greedy] -> 0  ::  reason...
+  [structural] -> 0
+XX case_01 (flowchart): true=0 pred=0
+```
+
+To get **non-empty OCR** text, install Tesseract (Thai + English) once, before running:
+
+```python
+!apt-get -qq install -y tesseract-ocr tesseract-ocr-tha && pip install -q pytesseract
+```
+
+Without it, OCR degrades to `"<empty …>"` and the VLM still reads the image directly; the
+Mermaid debug line is unaffected. Turn the noise off by simply not setting the two vars (they
+default to `0`).
+
 ## Hardware notes — already handled in `config.py`
 
 - **T4 has no bfloat16** → `torch_dtype=float16`.
