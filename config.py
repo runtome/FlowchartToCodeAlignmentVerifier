@@ -83,15 +83,29 @@ MAX_NEW_TOKENS = 1024
 GREEDY = dict(do_sample=False, temperature=None, top_p=None)
 
 # Self-consistency sampling pass (metric is exact accuracy -> majority vote helps).
-N_SAMPLES = 5                       # extra sampled votes on top of the greedy pass
+N_SAMPLES = 5                       # extra sampled votes (non-ensemble / single-baseline path)
 SAMPLE_TEMPERATURE = 0.7
 SAMPLE_TOP_P = 0.9
+
+# --------------------------------------------------------------------------- #
+# Ensemble (Baseline A + Baseline B + structural check)
+# --------------------------------------------------------------------------- #
+# Baseline A = direct image judge; Baseline B = image->Mermaid->judge (two-stage).
+# For a flowchart case the final score is a majority vote over A, B, and the
+# rule-based structural estimate. For a pseudocode case there is no image, so A
+# and B collapse into one text judge (no Mermaid stage).
+USE_BASELINE_A = True        # direct image (flowchart) / text (pseudocode) judge
+USE_BASELINE_B = True        # two-stage: transcribe flowchart to Mermaid, then judge
+USE_STRUCTURAL_VOTE = True   # add fallback_score_from_signals as one ensemble vote
+SAMPLES_PER_BASELINE = 2     # sampled votes per baseline on top of its greedy vote (balanced)
+DEBUG_MERMAID = os.environ.get("ALIGN_DEBUG_MERMAID", "0") == "1"  # print Mermaid per case
 
 # --------------------------------------------------------------------------- #
 # Pipeline toggles
 # --------------------------------------------------------------------------- #
 USE_OCR = True          # augment the flowchart image with detected text
-TWO_PASS = False        # transcribe flowchart -> text, then score as text
+DEBUG_OCR = os.environ.get("ALIGN_DEBUG_OCR", "0") == "1"  # print OCR text per file
+TWO_PASS = False        # DEPRECATED: superseded by USE_BASELINE_B (Mermaid two-stage)
 USE_FEWSHOT = True      # prepend labeled anchors from the train CSV
 N_FEWSHOT = 4           # anchors per prompt: aim for one per score level (0/1/2/3)
 USE_PERSONAS = False    # add strict/lenient persona votes to the ensemble

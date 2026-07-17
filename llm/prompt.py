@@ -179,32 +179,85 @@ def flowchart_user_turn(image: Any, java_code: str, java_hint: str, ocr_text: st
     }
 
 
-def pseudocode_user_turn(pseudo_text: str, java_code: str, java_hint: str) -> dict[str, Any]:
+def design_user_turn(design_text: str, java_code: str, java_hint: str, label: str = "DESIGN") -> dict[str, Any]:
+    """Text-only scoring turn for any textual design (pseudocode, or a flowchart
+    already transcribed to Mermaid). `label` names the design in the prompt."""
     text = (
-        "Grade the alignment between the PSEUDOCODE and the JAVA SOLUTION. The "
-        "pseudocode may be in Thai; interpret it faithfully.\n\n"
-        f"PSEUDOCODE:\n{pseudo_text}\n\n"
+        f"Grade the alignment between the {label} and the JAVA SOLUTION. The "
+        "design may be in Thai; interpret it faithfully.\n\n"
+        f"{label}:\n{design_text}\n\n"
         f"JAVA SOLUTION:\n{java_code}\n\n{java_hint}\n\n"
         "Compare them step by step, then output the JSON object on the last line."
     )
     return {"role": "user", "content": [{"type": "text", "text": text}]}
 
 
-def transcribe_flowchart_turn(image: Any, ocr_text: str = "") -> list[dict[str, Any]]:
-    """Two-pass mode: ask the VLM to transcribe the flowchart into normalized
-    text first (no scoring). Returns a full message list."""
+def pseudocode_user_turn(pseudo_text: str, java_code: str, java_hint: str) -> dict[str, Any]:
+    return design_user_turn(pseudo_text, java_code, java_hint, label="PSEUDOCODE")
+
+
+def mermaid_user_turn(mermaid_text: str, java_code: str, java_hint: str) -> dict[str, Any]:
+    """Baseline B reasoning turn: the flowchart was transcribed to Mermaid; grade
+    that graph against the code. The Mermaid preserves nodes, order, and Yes/No
+    branches, so compare its decision STRUCTURE to the code's."""
+    return design_user_turn(
+        mermaid_text, java_code, java_hint,
+        label="FLOWCHART (given as a Mermaid diagram)",
+    )
+
+
+_MERMAID_SYSTEM = (
+    "You convert a flowchart image into Mermaid flowchart code, precisely and "
+    "completely. Output ONLY one ```mermaid code block, nothing else."
+)
+
+
+def flowchart_to_mermaid_turn(image: Any, ocr_text: str = "") -> list[dict[str, Any]]:
+    """Baseline B, stage 1 (perception): ask the VLM to transcribe the flowchart
+    into Mermaid so the reasoning stage can compare graph structure to the code."""
     text = (
-        "Transcribe this flowchart into a normalized, ordered list of steps. "
-        "For each node write its kind (start/input/process/decision/output/end) "
-        "and its text. Follow the arrows to preserve order and branches. "
-        "Output plain text only."
+        "Convert this flowchart into Mermaid `flowchart TD` code. Rules:\n"
+        "- Include EVERY node; keep its original text (Thai is fine).\n"
+        "- Use node shapes to encode kind: ([start/end]), [/parallelogram I/O/], "
+        "[process], {decision}.\n"
+        "- Include EVERY edge, following the arrows to preserve order.\n"
+        "- Label each decision's outgoing edges with its branch text "
+        "(Yes/No/ใช่/ไม่).\n"
+        "Output ONLY the ```mermaid code block."
     )
     if ocr_text:
         text += f"\n\nOCR text to help you (may contain errors):\n{ocr_text}"
     return [
-        {"role": "system", "content": [{"type": "text", "text": "You transcribe flowcharts precisely."}]},
+        {"role": "system", "content": [{"type": "text", "text": _MERMAID_SYSTEM}]},
         {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": text}]},
     ]
+
+
+def extract_mermaid(text: str) -> str:
+    """Pull the Mermaid body out of the model output, tolerating missing/extra
+    fences. Returns the cleaned diagram text (never raises)."""
+    if not text:
+        return ""
+    t = text.strip()
+    # Prefer a fenced ```mermaid ... ``` block.
+    lower = t.lower()
+    start = lower.find("```mermaid")
+    if start != -1:
+        start += len("```mermaid")
+        end = t.find("```", start)
+        body = t[start:] if end == -1 else t[start:end]
+        return body.strip()
+    # Any generic fenced block.
+    if t.startswith("```"):
+        inner = t[3:]
+        end = inner.find("```")
+        return (inner if end == -1 else inner[:end]).strip()
+    # Unfenced: keep from the first flowchart/graph keyword onward.
+    for kw in ("flowchart", "graph "):
+        i = lower.find(kw)
+        if i != -1:
+            return t[i:].strip()
+    return t
 
 
 def build_messages(
@@ -215,18 +268,24 @@ def build_messages(
     image: Any = None,
     pseudo_text: str = "",
     ocr_text: str = "",
+    mermaid_text: str = "",
     fewshot: list[dict[str, Any]] | None = None,
     persona: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Assemble the full chat message list for one scoring call."""
+    """Assemble the full chat message list for one scoring call.
+
+    Routing: `mermaid_text` (Baseline B) wins if given; else a flowchart `image`
+    (Baseline A) is used as a multimodal turn; else the `pseudo_text` (pseudocode
+    case) is scored as text."""
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": [{"type": "text", "text": system_prompt(persona)}]}
     ]
     if fewshot:
         messages.extend(fewshot)
-    if representation_type == "flowchart" and image is not None:
+    if mermaid_text:
+        messages.append(mermaid_user_turn(mermaid_text, java_code, java_hint))
+    elif representation_type == "flowchart" and image is not None:
         messages.append(flowchart_user_turn(image, java_code, java_hint, ocr_text))
     else:
-        # pseudocode, or flowchart already transcribed into pseudo_text (two-pass)
         messages.append(pseudocode_user_turn(pseudo_text, java_code, java_hint))
     return messages

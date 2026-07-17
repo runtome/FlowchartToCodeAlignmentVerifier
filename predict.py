@@ -218,7 +218,46 @@ def parse_score(text: str) -> int | None:
 
 
 # --------------------------------------------------------------------------- #
-# Scoring one case (with self-consistency)
+# Voting helpers
+# --------------------------------------------------------------------------- #
+def _collect_votes(judge, build_msgs, n_samples, *, tag="", verbose=False):
+    """One greedy vote (with a single parse retry) + `n_samples` sampled votes
+    over the same messages. Returns (votes, greedy_value)."""
+    messages = build_msgs()
+    out = judge.generate(messages, sample=False)
+    greedy = parse_score(out)
+    if greedy is None:  # one retry on unparseable output
+        out = judge.generate(messages, sample=False)
+        greedy = parse_score(out)
+    if verbose:
+        print(f"  [{tag} greedy] -> {greedy}  ::  {out[:140].replace(chr(10), ' ')}")
+
+    votes: list[int] = [greedy] if greedy is not None else []
+    for _ in range(n_samples):
+        s = parse_score(judge.generate(messages, sample=True))
+        if s is not None:
+            votes.append(s)
+    return votes, greedy
+
+
+def _majority(votes: list[int], prefer: int | None) -> int:
+    """Most common vote; ties break toward `prefer` (the greedy anchor) if it is
+    among the tied values, otherwise toward whichever tied value appears first."""
+    counts = Counter(votes)
+    best_n = counts.most_common(1)[0][1]
+    tied = [v for v, n in counts.most_common() if n == best_n]
+    if len(tied) == 1:
+        return tied[0]
+    if prefer is not None and prefer in tied:
+        return prefer
+    for v in votes:
+        if v in tied:
+            return v
+    return tied[0]
+
+
+# --------------------------------------------------------------------------- #
+# Scoring one case — ensemble of Baseline A + Baseline B + structural vote
 # --------------------------------------------------------------------------- #
 def score_case(
     judge: Judge,
@@ -232,83 +271,76 @@ def score_case(
     java_hint = describe_java(java_code)
     design_text_for_fallback = read_pseudo(case_dir)
 
+    is_flow = representation_type == "flowchart"
     image = None
     ocr_text = ""
     pseudo_text = ""
 
-    if representation_type == "flowchart":
+    if is_flow:
         image = preprocess_flowchart(flowchart_path(case_dir))
         if C.USE_OCR:
             ocr_text = ocr_flowchart(image)
             design_text_for_fallback = ocr_text or design_text_for_fallback
-        if C.TWO_PASS:
-            # Transcribe the flowchart to text, then score as a text task.
-            trans_msgs = P.transcribe_flowchart_turn(image, ocr_text)
-            pseudo_text = judge.generate(trans_msgs, sample=False).strip()
-            design_text_for_fallback = pseudo_text or design_text_for_fallback
-            image = None
-            representation_type = "pseudocode"
+            if C.DEBUG_OCR:
+                flat = " | ".join(t.strip() for t in ocr_text.splitlines() if t.strip())
+                print(f'ocr:{case_dir.name}/{C.FLOWCHART_NAME} : "{flat or "<empty — no OCR engine or no text>"}"')
     else:
         pseudo_text = read_pseudo(case_dir)
-
-    personas = [None]
-    if C.USE_PERSONAS:
-        personas = [None, P.PERSONA_STRICT, P.PERSONA_LENIENT]
+        design_text_for_fallback = pseudo_text or design_text_for_fallback
 
     votes: list[int] = []
-    # Greedy pass per persona.
-    for persona in personas:
-        messages = P.build_messages(
-            representation_type=representation_type,
-            java_code=java_code,
-            java_hint=java_hint,
-            image=image,
-            pseudo_text=pseudo_text,
-            ocr_text=ocr_text,
-            fewshot=fewshot,
-            persona=persona,
-        )
-        out = judge.generate(messages, sample=False)
-        s = parse_score(out)
-        if s is None:  # one retry
-            out = judge.generate(messages, sample=False)
-            s = parse_score(out)
-        if s is not None:
-            votes.append(s)
-        if verbose:
-            print(f"  [greedy/{persona}] -> {s}\n  {out[:200]}")
+    greedy_ref: int | None = None
 
-    # Sampled self-consistency votes (single persona to bound cost).
-    base_messages = P.build_messages(
-        representation_type=representation_type,
-        java_code=java_code,
-        java_hint=java_hint,
-        image=image,
-        pseudo_text=pseudo_text,
-        ocr_text=ocr_text,
-        fewshot=fewshot,
-        persona=None,
-    )
-    for _ in range(C.N_SAMPLES):
-        out = judge.generate(base_messages, sample=True)
-        s = parse_score(out)
-        if s is not None:
-            votes.append(s)
+    personas = [None, P.PERSONA_STRICT, P.PERSONA_LENIENT] if C.USE_PERSONAS else [None]
+
+    # ---- Baseline A: direct image (flowchart) or text (pseudocode) judge ----
+    if C.USE_BASELINE_A:
+        for persona in personas:
+            n = C.SAMPLES_PER_BASELINE if persona is None else 0  # sample only the base persona
+            v, g = _collect_votes(
+                judge,
+                lambda p=persona: P.build_messages(
+                    representation_type=representation_type, java_code=java_code,
+                    java_hint=java_hint, image=image, pseudo_text=pseudo_text,
+                    ocr_text=ocr_text, fewshot=fewshot, persona=p,
+                ),
+                n, tag=f"A/{persona or 'base'}", verbose=verbose,
+            )
+            votes += v
+            if greedy_ref is None:
+                greedy_ref = g
+
+    # ---- Baseline B: image -> Mermaid -> judge (flowchart cases only) ----
+    if C.USE_BASELINE_B and is_flow:
+        mermaid = P.extract_mermaid(
+            judge.generate(P.flowchart_to_mermaid_turn(image, ocr_text), sample=False)
+        )
+        if C.DEBUG_MERMAID:
+            flat = " ; ".join(l.strip() for l in mermaid.splitlines() if l.strip())
+            print(f'mermaid:{case_dir.name}/{C.FLOWCHART_NAME} : "{flat[:400] or "<empty>"}"')
+        if mermaid:
+            v, g = _collect_votes(
+                judge,
+                lambda: P.build_messages(
+                    representation_type="flowchart", java_code=java_code,
+                    java_hint=java_hint, mermaid_text=mermaid, fewshot=fewshot,
+                ),
+                C.SAMPLES_PER_BASELINE, tag="B/mermaid", verbose=verbose,
+            )
+            votes += v
+            if greedy_ref is None:
+                greedy_ref = g
+
+    # ---- Structural check: one rule-based vote ----
+    if C.USE_STRUCTURAL_VOTE:
+        struct = fallback_score_from_signals(java_code, design_text_for_fallback)
+        votes.append(struct)
+        if verbose:
+            print(f"  [structural] -> {struct}")
 
     if not votes:
         return fallback_score_from_signals(java_code, design_text_for_fallback)
-
-    # Majority vote; tie-break toward the first (greedy) vote.
-    counts = Counter(votes)
-    top = counts.most_common()
-    best_n = top[0][1]
-    tied = [v for v, n in top if n == best_n]
-    if len(tied) == 1:
-        return tied[0]
-    for v in votes:  # greedy vote comes first in `votes`
-        if v in tied:
-            return v
-    return tied[0]
+    return _majority(votes, greedy_ref)
 
 
 # --------------------------------------------------------------------------- #

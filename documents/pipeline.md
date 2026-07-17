@@ -39,28 +39,27 @@ stable answers (self-consistency voting) over hedging.
 
 ```mermaid
 flowchart TD
-    A[id_definition.csv row: case_id + representation_type] --> B{representation_type}
-    B -->|flowchart| C[preprocess_flowchart PNG]
-    C --> D[optional OCR text]
+    A[id_definition.csv row] --> B{representation_type}
+    B -->|flowchart| C[preprocess_flowchart PNG + OCR]
     B -->|pseudocode| E[read pseudo.txt]
-    F[read solution.java] --> G[describe_java hint]
-    C --> H[build_messages]
-    D --> H
-    E --> H
-    G --> H
-    I[few-shot anchors from train CSV] --> H
-    H --> J[Qwen2.5-VL judge: greedy + N sampled votes]
-    J --> K[parse_score from JSON]
-    K --> L[majority vote 0-3]
+    C --> A1[Baseline A: direct image judge]
+    C --> BB[Baseline B: image → Mermaid → judge]
+    E --> A1
+    F[read solution.java + describe_java hint] --> A1
+    F --> BB
+    F --> S[Structural vote: java_signals]
+    A1 --> V[votes: greedy + samples]
+    BB --> V
+    S --> V
+    V --> L[majority vote 0-3]
     L --> M[submission.csv: Id, Alignment_score]
-    K -.parse fails.-> N[rule-based fallback score]
-    N --> L
 ```
 
-One model (**Qwen2.5-VL-7B-Instruct**) handles both sub-tasks: it reads the flowchart
-image directly, and reads pseudocode as plain text. There is no trained classifier — the
-labeled set is tiny (33 cases), so labels are used as **few-shot anchors** and a
-**validation set**, not training data.
+One model (**Qwen2.5-VL-7B-Instruct**) plays every role: it judges the image directly
+(Baseline A), transcribes the flowchart to Mermaid and judges that (Baseline B), and reads
+pseudocode as text. There is no trained classifier — the labeled set is tiny (33 cases), so
+labels are used as **few-shot anchors** and a **validation set**, not training data. For
+pseudocode cases (no image) A and B collapse into a single text judge.
 
 ---
 
@@ -123,6 +122,18 @@ PaddleOCR and returns `""` if no engine is available — so OCR is a pure bonus,
 hard dependency. The detected text is passed to the model beside the image so it doesn't
 misread Thai labels or operators.
 
+**Debugging OCR on Kaggle:** set `ALIGN_DEBUG_OCR=1` (or `config.DEBUG_OCR = True`) to print
+one greppable line per flowchart as it is scored:
+
+```
+ocr:case_34/flowchart.png : "เริ่มต้น | รับค่า a, b, c | a >= b และ a >= c | Yes | ..."
+```
+
+Empty output prints `"<empty — no OCR engine or no text>"`, which is your cue to install
+Tesseract (`!apt-get install -y tesseract-ocr tesseract-ocr-tha && pip install pytesseract`).
+In the notebook, run `import os; os.environ['ALIGN_DEBUG_OCR']='1'` before the `!python
+predict.py ...` cell, or run `!ALIGN_DEBUG_OCR=1 python predict.py --validate`.
+
 ### 4.4 Prompt construction — `llm/prompt.py`
 
 The judge is asked to reason, then emit **strict JSON**. `build_messages` assembles a chat
@@ -164,25 +175,36 @@ answer, teaching both the rubric mapping and the output shape.
 - `generate(messages, sample)` renders the chat template, runs `process_vision_info` from
   `qwen_vl_utils`, and decodes only the newly generated tokens.
 
-### 4.7 Scoring one case — `predict.score_case`
+### 4.7 Scoring one case — `predict.score_case` (ensemble)
+
+A flowchart score is a **majority vote over three voters**: Baseline A (direct image judge),
+Baseline B (image→Mermaid→judge), and the rule-based structural check. Each baseline casts a
+greedy vote plus `SAMPLES_PER_BASELINE` sampled votes (self-consistency). A pseudocode case has
+no image, so A and B collapse into one text judge.
 
 ```
 read java + hint
 if flowchart:  image = preprocess;  ocr_text = ocr (if USE_OCR)
-               if TWO_PASS: transcribe image -> text, treat as pseudocode
 else:          pseudo_text = read pseudo
 
 votes = []
-for persona in personas:                 # 1 by default, 3 if USE_PERSONAS
-    out = generate(greedy);  s = parse_score(out)
-    if s is None: retry once
-    votes.append(s)
-for _ in range(N_SAMPLES):                # self-consistency
-    out = generate(sample=True);  votes.append(parse_score(out))
+# Baseline A (USE_BASELINE_A): direct image / text judge
+for persona in personas:                          # base persona sampled; extras greedy-only
+    votes += collect_votes(build_A(persona), SAMPLES_PER_BASELINE if base else 0)
+# Baseline B (USE_BASELINE_B, flowchart only): perception once, then reason over Mermaid
+if flowchart:
+    mermaid = extract_mermaid(generate(flowchart_to_mermaid_turn(image, ocr)))   # cached
+    votes += collect_votes(build_B(mermaid), SAMPLES_PER_BASELINE)
+# Structural vote (USE_STRUCTURAL_VOTE)
+votes += [ fallback_score_from_signals(java, ocr_or_pseudo) ]
 
 if no votes parsed: return fallback_score_from_signals(...)
-return majority(votes)                    # ties break toward the greedy vote
+return majority(votes)                    # ties break toward Baseline A's greedy vote
 ```
+
+`_collect_votes` does one greedy pass (with a single parse retry) + N sampled passes over the
+same messages; `_majority` picks the mode, tie-breaking toward the greedy anchor. The Mermaid
+transcription is generated once and reused across Baseline B's votes.
 
 **`parse_score`** is defensive: it looks for `"final_score": N`, then tries to load the whole
 JSON object, then falls back to the last standalone `0–3` in the text. This tolerates markdown
@@ -207,10 +229,16 @@ fences, extra prose, and minor JSON breakage.
 | `MODEL_DIR` / `ALIGN_MODEL_DIR` | `Qwen/Qwen2.5-VL-7B-Instruct` | HF repo id (online) or local path (offline). |
 | `ALIGN_OFFLINE` (env) | `0` | `1` forces HF offline mode. |
 | `LOAD_IN_4BIT` | `False` | 4-bit quantized load if fp16 OOMs. |
-| `N_SAMPLES` / `SAMPLE_TEMPERATURE` | `5` / `0.7` | Self-consistency strength. |
+| `USE_BASELINE_A` | `True` | Direct image (flowchart) / text (pseudocode) judge. |
+| `USE_BASELINE_B` | `True` | Two-stage: image → Mermaid → judge (flowchart only). |
+| `USE_STRUCTURAL_VOTE` | `True` | Add the rule-based estimate as one ensemble vote. |
+| `SAMPLES_PER_BASELINE` | `2` | Sampled votes per baseline (on top of its greedy vote). |
+| `DEBUG_MERMAID` / `ALIGN_DEBUG_MERMAID` | `False` / `0` | Print the generated Mermaid per case. |
+| `N_SAMPLES` / `SAMPLE_TEMPERATURE` | `5` / `0.7` | Self-consistency (non-ensemble path). |
 | `USE_OCR` | `True` | Add detected flowchart text to the prompt. |
+| `DEBUG_OCR` / `ALIGN_DEBUG_OCR` (env) | `False` / `0` | Print `ocr:<case>/flowchart.png : "…"` per file. |
 | `TWO_PASS` | `False` | Transcribe flowchart → text, then score. |
-| `USE_FEWSHOT` / `N_FEWSHOT` | `True` / `3` | Labeled anchors per prompt. |
+| `USE_FEWSHOT` / `N_FEWSHOT` | `True` / `4` | Labeled anchors per prompt (aim one per score level). |
 | `USE_PERSONAS` | `False` | Add strict/lenient votes to the ensemble. |
 | `MIN_PIXELS` / `MAX_PIXELS` | 256·28² / 1280·28² | Visual-token bounds. |
 
