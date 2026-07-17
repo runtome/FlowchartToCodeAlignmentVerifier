@@ -1,0 +1,32 @@
+# Competition data — not committed (attach on Kaggle instead)
+datasets/
+data/
+*.zip
+
+# Model weights / large artifacts
+*.safetensors
+*.bin
+*.pt
+*.gguf
+models/
+
+# Outputs
+submission.csv
+/kaggle/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Notebook / tooling
+.ipynb_checkpoints/
+.DS_Store
+.idea/
+.vscode/

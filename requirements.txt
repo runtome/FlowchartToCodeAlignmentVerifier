@@ -1,0 +1,16 @@
+# Core (present on Kaggle GPU images by default)
+transformers>=4.49.0
+torch
+pandas
+pillow
+
+# Qwen2.5-VL vision helper
+qwen-vl-utils
+
+# Optional, improves accuracy / robustness
+accelerate
+bitsandbytes        # only if LOAD_IN_4BIT=True
+javalang            # more accurate Java structural parsing
+pytesseract         # OCR augmentation (needs tesseract-ocr system package)
+# paddleocr         # alternative OCR engine
+# opencv-python-headless
