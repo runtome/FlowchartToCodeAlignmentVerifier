@@ -27,17 +27,22 @@ SOLUTION, on this 0-3 scale. Decide it in TWO steps:
        - different structure / approach  -> score 0
        - same structure                  -> score is 1, 2, or 3 (go to Step B)
 
-  STEP B - Given the same structure, how faithful are the DETAILS?
-       3 = Fully consistent: steps, conditions, computations, order all match
-           one-to-one.
-       2 = Mostly consistent: same structure and steps, only MINOR differences
-           (a loop bound like i<n vs i<=n, > vs >=, one small detail) -- score 2
-           EVEN IF that small difference changes the numeric result.
-       1 = Weakly consistent: the structure matches but a KEY operation or
-           condition is wrong, or there are several such differences.
+  STEP B - Given the same structure, LIST the concrete differences between the
+    design and the Java (each one names the design element vs the Java element),
+    then score by COUNTING and SEVERITY -- do not guess a number:
+       3 = the difference list is EMPTY: steps, conditions, computations and
+           order all correspond one-to-one.
+       2 = exactly ONE MINOR difference and no key difference (a loop bound like
+           i<n vs i<=n, > vs >=, one small detail) -- score 2 EVEN IF that small
+           difference changes the numeric result.
+       1 = any KEY (behavior-changing) difference, OR two or more differences of
+           any kind: the structure matches but a key operation/condition is wrong.
 
   0 = Inconsistent: a genuinely different algorithm / control-flow structure, or
-      no meaningful correspondence at all."""
+      no meaningful correspondence at all.
+
+  A wrong DETAIL on the right structure is 1 or 2, NEVER 0. Only Step A (a
+  different structure) produces a 0."""
 
 GRADING_PRINCIPLES = """\
 IMPORTANT - how to score (worked examples for the design "sum 1..n":
@@ -53,15 +58,29 @@ IMPORTANT - how to score (worked examples for the design "sum 1..n":
                                       control-flow structure, even though the final
                                       sum is the same)
 
-  Rules:
+  HOW TO SCORE 1 vs 2 vs 3 -- build a DIFFERENCE LEDGER, then count:
+  - Walk the design and the Java in parallel and write down every CONCRETE
+    difference as "design X vs java Y" (a specific element on each side).
+  - Classify each difference:
+      MINOR  (does not change the operation itself): loop bound off-by-one, > vs
+             >=, < vs <=, i<n vs i<=n, one missing/extra trivial step, a different
+             but equivalent phrasing.
+      KEY    (changes what the program computes/decides): a wrong operand or
+             variable in a condition or computation (e.g. design uses i%2 but Java
+             uses n%2; design min=weights[0] but Java min=0), a wrong operator that
+             changes the operation (+ vs *, && vs ||), a missing computation, a
+             branch that leads somewhere different.
+  - Map: 0 differences -> 3;  exactly 1 MINOR and 0 KEY -> 2;  any KEY, or >= 2
+    differences of any kind -> 1;  different control-flow structure -> 0.
+  - Do NOT invent differences. Only list one you can point to concretely on BOTH
+    sides. Ignore variable names, formatting, comments, Thai vs English wording,
+    and provably-equivalent expressions -- those are NOT differences. If after this
+    the ledger is empty, the score is 3 (do not hedge down to 2).
   - Do NOT give 0 just because the output would differ or a detail is wrong. 0 is
-    reserved for a genuinely DIFFERENT structure / approach. Wrong details on top
-    of the right structure are 1 or 2.
+    reserved for a genuinely DIFFERENT structure / approach.
   - Structure differences that DO mean 0: up-counting vs down-counting loops;
     nested pairwise comparisons vs one combined condition; independent unchained
     ifs vs chained else-if; a fixed-count loop vs a different while stop condition.
-  - Minor differences that stay at 2: loop bound off-by-one, > vs >=, < vs <=, one
-    missing/extra trivial step, equivalent variable names, formatting.
   - Judge what each program ACTUALLY does, in order -- not whether both happen to
     solve the stated problem."""
 
@@ -78,15 +97,18 @@ TRUE and "No"/"ไม่" is FALSE. Follow the arrows to recover the real order.
 _OUTPUT_CONTRACT = """\
 First, compare the two step by step in plain text: summarize the code's algorithm,
 summarize the design's algorithm, then go through input, output, order, loop,
-condition, and computation, noting every real difference (especially structural
-ones). THEN, on the LAST line, output ONLY this JSON object (no markdown fence):
+condition, and computation. Build the DIFFERENCE LEDGER: list every concrete
+"design X vs java Y" difference and tag each MINOR or KEY (invent none; ignore
+names/formatting/language/equivalent expressions). THEN, on the LAST line, output
+ONLY this JSON object (no markdown fence):
 {"dimension_findings": {"input": "match|partial|mismatch", "output": "...",
  "order": "...", "loop": "...", "condition": "...", "computation": "..."},
- "mismatches": ["..."], "final_score": <0|1|2|3>}
-Mapping (apply Step A then Step B): different control-flow structure -> 0; else
-one-to-one -> 3; same structure, only minor detail differences -> 2; same
-structure but a key operation/condition wrong or several differences -> 1. A wrong
-DETAIL on the right structure is 1 or 2, never 0. final_score MUST be an integer 0-3."""
+ "differences": [{"detail": "design X vs java Y", "severity": "minor|key"}],
+ "final_score": <0|1|2|3>}
+Score STRICTLY from the ledger: different control-flow structure -> 0; else empty
+ledger -> 3; exactly one MINOR and no KEY -> 2; any KEY or two-or-more differences
+-> 1. A wrong DETAIL on the right structure is 1 or 2, never 0. An empty ledger is
+3 -- do not hedge to 2. final_score MUST be an integer 0-3."""
 
 # Persona flavor sentences for ensemble diversity (optional).
 PERSONA_STRICT = "Grade strictly: any real difference in steps, conditions, or control-flow structure should pull the score down."
@@ -115,36 +137,39 @@ def system_prompt(persona: str | None = None) -> str:
 # so the findings must agree with the score -- never "all match" for a 0.
 _ANCHOR_TEMPLATES: dict[int, tuple[str, str]] = {
     3: (
-        "Step A: same control-flow structure as the design. Step B: every step, "
-        "condition and computation corresponds one-to-one. No real differences.",
+        "Step A: same control-flow structure as the design. Step B ledger: I walk "
+        "both in parallel and find NO concrete difference -- every step, condition "
+        "and computation corresponds one-to-one. Empty ledger -> 3 (not hedged to 2).",
         '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
         '"loop": "match", "condition": "match", "computation": "match"}, '
-        '"mismatches": [], "final_score": 3}',
+        '"differences": [], "final_score": 3}',
     ),
     2: (
-        "Step A: same control-flow structure. Step B: only a MINOR detail differs "
-        "(e.g. a loop bound or > vs >=). Even if that changes the result, a minor "
-        "detail on the right structure stays a 2 -- not a 0.",
+        "Step A: same control-flow structure. Step B ledger: exactly ONE MINOR "
+        "difference (a loop bound / > vs >=), no KEY difference. One minor on the "
+        "right structure stays a 2 -- even if it changes the result, and never a 0.",
         '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
         '"loop": "partial", "condition": "match", "computation": "match"}, '
-        '"mismatches": ["minor loop-bound / operator difference"], "final_score": 2}',
+        '"differences": [{"detail": "loop bound i<=n vs i<n", "severity": "minor"}], '
+        '"final_score": 2}',
     ),
     1: (
-        "Step A: same control-flow structure. Step B: a KEY operation in the body "
-        "is wrong (the loop matches but it computes the wrong thing), so the "
-        "correspondence is only weak -- but the structure still matches, so not 0.",
+        "Step A: same control-flow structure. Step B ledger: a KEY difference -- the "
+        "loop matches but the body computes the wrong thing (a wrong operand/operation). "
+        "A KEY difference on the right structure is weak correspondence -> 1, not 0.",
         '{"dimension_findings": {"input": "match", "output": "partial", "order": "match", '
         '"loop": "match", "condition": "match", "computation": "mismatch"}, '
-        '"mismatches": ["a key computation/operation differs from the design"], "final_score": 1}',
+        '"differences": [{"detail": "body computes sum=i+n vs design sum=sum+i", "severity": "key"}], '
+        '"final_score": 1}',
     ),
     0: (
         "Step A fails: the code uses a genuinely DIFFERENT control-flow structure "
         "than the design (e.g. a down-counting while loop instead of the design's "
         "up-counting for loop), even though the final result is the same. Different "
-        "structure = inconsistent.",
+        "structure = inconsistent, regardless of the detail ledger.",
         '{"dimension_findings": {"input": "match", "output": "match", "order": "mismatch", '
         '"loop": "mismatch", "condition": "mismatch", "computation": "match"}, '
-        '"mismatches": ["different control-flow structure (counts down vs up)"], '
+        '"differences": [{"detail": "down-counting while vs up-counting for (different structure)", "severity": "key"}], '
         '"final_score": 0}',
     ),
 }
