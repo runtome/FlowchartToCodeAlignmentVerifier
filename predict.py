@@ -82,37 +82,35 @@ def flowchart_path(case_dir: Path) -> Path:
 # Few-shot anchors from the labeled train set
 # --------------------------------------------------------------------------- #
 def build_fewshot() -> list[dict[str, Any]]:
+    """Curated contrastive anchors: the exact train cases in C.FEWSHOT_CASE_IDS
+    (an identical design scored 0/1/2/3 by Java fidelity), each rendered as its
+    pseudocode design + Java + a score-appropriate reasoning demonstration."""
     if not (C.USE_FEWSHOT and C.TRAIN_CSV.exists()):
         return []
     df = pd.read_csv(C.TRAIN_CSV)
+    # case_id -> label (flowchart and pseudocode share a label; take the first).
+    score_by_case = (
+        df.groupby("case_id")["alignment_score"].first().astype(int).to_dict()
+    )
     anchors: list[dict[str, Any]] = []
-    seen_scores: set[int] = set()
-    # One anchor per score level, preferring pseudocode (text-only, cheap).
-    df = df.sort_values("representation_type", ascending=False)  # pseudocode before flowchart
-    for _, row in df.iterrows():
-        score = int(row["alignment_score"])
-        if score in seen_scores or len(anchors) >= C.N_FEWSHOT:
+    for case_id in C.FEWSHOT_CASE_IDS:
+        if case_id not in score_by_case:
             continue
         try:
-            case_dir = find_case_dir(str(row["case_id"]))
+            case_dir = find_case_dir(case_id)
             java_code = read_java(case_dir)
-            rep = str(row["representation_type"])
-            if rep == "flowchart":
-                design_text = read_pseudo(case_dir) or "(flowchart; see steps)"
-            else:
-                design_text = read_pseudo(case_dir)
+            design_text = read_pseudo(case_dir) or "(flowchart; see steps)"
         except FileNotFoundError:
             continue
         anchors.append(
             {
-                "representation_type": rep,
+                "representation_type": "pseudocode",
                 "design_text": design_text[:1500],
                 "java_code": java_code[:2000],
                 "java_hint": describe_java(java_code),
-                "score": score,
+                "score": score_by_case[case_id],
             }
         )
-        seen_scores.add(score)
     return P.build_fewshot_messages(anchors)
 
 
@@ -242,19 +240,20 @@ def _collect_votes(judge, build_msgs, n_samples, *, tag="", verbose=False):
 
 
 def _majority(votes: list[int], prefer: int | None) -> int:
-    """Most common vote; ties break toward `prefer` (the greedy anchor) if it is
-    among the tied values, otherwise toward whichever tied value appears first."""
+    """Most common vote. Ties break toward the tied value nearest
+    `C.TIE_BREAK_TOWARD` (a gentle middle bias); among values equally near, toward
+    the greedy anchor `prefer`, else the one that appears first."""
     counts = Counter(votes)
     best_n = counts.most_common(1)[0][1]
     tied = [v for v, n in counts.most_common() if n == best_n]
     if len(tied) == 1:
         return tied[0]
-    if prefer is not None and prefer in tied:
-        return prefer
-    for v in votes:
-        if v in tied:
-            return v
-    return tied[0]
+    # nearest to the target; tie-break-within-tie by greedy anchor, then order.
+    order = {v: i for i, v in enumerate(votes)}
+    return min(
+        tied,
+        key=lambda v: (abs(v - C.TIE_BREAK_TOWARD), 0 if v == prefer else 1, order.get(v, 99)),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -400,6 +399,10 @@ def run_validation(
     random_sample: bool = False, seed: int | None = None,
 ) -> float:
     df = pd.read_csv(C.TRAIN_CSV)
+    skip = set(C.FEWSHOT_CASE_IDS) if (C.USE_FEWSHOT and C.EXCLUDE_FEWSHOT_FROM_VALIDATION) else set()
+    if skip:
+        df = df[~df["case_id"].isin(skip)]
+        print(f"(excluding {len(skip)} few-shot anchor case(s) from accuracy: {sorted(skip)})")
     df = _limit_rows(df, dry_run, random_sample, seed)
     y_true, y_pred, y_rep = [], [], []
     for _, row in df.iterrows():
@@ -420,9 +423,14 @@ def run_validation(
 
     n = max(len(y_true), 1)
     correct = sum(int(a == b) for a, b in zip(y_true, y_pred))
+    within1 = sum(int(abs(a - b) <= 1) for a, b in zip(y_true, y_pred))
     acc = correct / n
+    # "always predict 2" prior, the bar an ordinal judge must beat.
+    prior = max((sum(int(t == k) for t in y_true) for k in range(4)), default=0) / n
     print("\n" + "=" * 40)
     print(f"EXACT-MATCH ACCURACY: {acc * 100:.1f}%   ({correct}/{len(y_true)})")
+    print(f"  within +/-1        : {within1 / n * 100:.1f}%   ({within1}/{len(y_true)})")
+    print(f"  majority-class prior: {prior * 100:.1f}%   (beat this)")
 
     # Per-representation-type accuracy (flowchart vs pseudocode).
     for rep in ("flowchart", "pseudocode"):
@@ -449,7 +457,14 @@ def main() -> None:
     ap.add_argument("--dry-run", type=int, default=None, metavar="N", help="run only N rows, verbose")
     ap.add_argument("--random", action="store_true", help="with --dry-run, pick random cases (folders) instead of the first ones")
     ap.add_argument("--seed", type=int, default=None, help="seed for --random (reproducible sampling)")
+    ap.add_argument("--baseline", choices=["A", "B", "AB"], default=None,
+                    help="override baselines for this run: A=image only, B=Mermaid only, AB=both")
     args = ap.parse_args()
+
+    if args.baseline:  # override config for an A / B / A+B measurement run
+        C.USE_BASELINE_A = args.baseline in ("A", "AB")
+        C.USE_BASELINE_B = args.baseline in ("B", "AB")
+        print(f"[baseline override] A={C.USE_BASELINE_A} B={C.USE_BASELINE_B}")
 
     fewshot = build_fewshot()
     judge = Judge()

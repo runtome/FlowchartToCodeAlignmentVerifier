@@ -96,19 +96,31 @@ SAMPLE_TOP_P = 0.9
 # and B collapse into one text judge (no Mermaid stage).
 USE_BASELINE_A = True        # direct image (flowchart) / text (pseudocode) judge
 USE_BASELINE_B = True        # two-stage: transcribe flowchart to Mermaid, then judge
-USE_STRUCTURAL_VOTE = True   # add fallback_score_from_signals as one ensemble vote
+USE_STRUCTURAL_VOTE = False  # OFF: the rule estimate maps to 0/3 and skews the vote to extremes
 SAMPLES_PER_BASELINE = 2     # sampled votes per baseline on top of its greedy vote (balanced)
 DEBUG_MERMAID = os.environ.get("ALIGN_DEBUG_MERMAID", "0") == "1"  # print Mermaid per case
+
+# Break majority-vote ties toward the tied value nearest this score, then toward
+# the greedy anchor. 2 is the plurality label (41%), so a gentle middle bias helps.
+TIE_BREAK_TOWARD = 2
 
 # --------------------------------------------------------------------------- #
 # Pipeline toggles
 # --------------------------------------------------------------------------- #
-USE_OCR = True          # augment the flowchart image with detected text
+USE_OCR = False         # OFF: Thai Tesseract output is garbage & redundant (VLM reads Thai)
 DEBUG_OCR = os.environ.get("ALIGN_DEBUG_OCR", "0") == "1"  # print OCR text per file
 TWO_PASS = False        # DEPRECATED: superseded by USE_BASELINE_B (Mermaid two-stage)
 USE_FEWSHOT = True      # prepend labeled anchors from the train CSV
 N_FEWSHOT = 4           # anchors per prompt: aim for one per score level (0/1/2/3)
 USE_PERSONAS = False    # add strict/lenient persona votes to the ensemble
+
+# Contrastive few-shot: real train cases at each score level from ONE problem
+# (the "sum 1..n" group), so the model sees an identical design scored differently
+# by Java fidelity. Order: score 0, 1, 2, 3.
+FEWSHOT_CASE_IDS = ["case_17", "case_20", "case_18", "case_16"]
+# Skip these anchor cases when computing validation accuracy (they would be
+# trivially correct = leakage). No effect on the real test set (case_34+).
+EXCLUDE_FEWSHOT_FROM_VALIDATION = True
 
 VALID_SCORES = (0, 1, 2, 3)
 DEFAULT_FALLBACK_SCORE = 1  # used only if every parse + retry fails

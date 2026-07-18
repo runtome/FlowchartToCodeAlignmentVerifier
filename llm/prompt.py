@@ -19,39 +19,51 @@ from typing import Any
 # --------------------------------------------------------------------------- #
 RUBRIC = """\
 You grade how well a program DESIGN (a flowchart or pseudocode) matches a Java
-SOLUTION, on this 0-3 scale:
+SOLUTION, on this 0-3 scale. Decide it in TWO steps:
 
-  0 = Inconsistent: they do not match, OR the code uses a different algorithm /
-      control-flow STRUCTURE than the design -- even if both happen to produce the
-      same output.
-  1 = Weakly consistent: some parts match, but there are several important
-      differences in steps, conditions, or control flow.
-  2 = Mostly consistent: the structure and steps match the design; only MINOR
-      differences remain (e.g. > vs >=, i<n vs i<=n-1, a missing detail).
-  3 = Fully consistent: the concept, the steps, the conditions, and the order of
-      execution all correspond one-to-one."""
+  STEP A - Is the control-flow STRUCTURE the same overall approach?
+    (same kind of loop going the same direction, the same decision structure,
+     the same order of operations). This sets the floor:
+       - different structure / approach  -> score 0
+       - same structure                  -> score is 1, 2, or 3 (go to Step B)
+
+  STEP B - Given the same structure, how faithful are the DETAILS?
+       3 = Fully consistent: steps, conditions, computations, order all match
+           one-to-one.
+       2 = Mostly consistent: same structure and steps, only MINOR differences
+           (a loop bound like i<n vs i<=n, > vs >=, one small detail) -- score 2
+           EVEN IF that small difference changes the numeric result.
+       1 = Weakly consistent: the structure matches but a KEY operation or
+           condition is wrong, or there are several such differences.
+
+  0 = Inconsistent: a genuinely different algorithm / control-flow structure, or
+      no meaningful correspondence at all."""
 
 GRADING_PRINCIPLES = """\
-IMPORTANT - how to compare:
-  - You are checking whether the design and the code describe the SAME algorithm
-    STEP BY STEP: the same inputs, the same sequence of operations, the same
-    decision structure (how many decisions and what each one tests), the same
-    loops (kind, count, stop condition), and the same outputs.
-  - Producing the same final RESULT through a DIFFERENT structure is NOT full
-    consistency. Examples that should score LOW (0-1), not high:
-      * design tests "a >= b AND a >= c" in one condition, but code uses nested
-        pairwise comparisons (if a>b { if a>c ... }) -> different decision
-        structure -> mismatch.
-      * design uses chained else-if, but code uses independent unchained ifs.
-      * design loops a fixed number of times, but code uses a while with a
-        different stop condition.
-  - Differences that are only MINOR (cap the score around 2, do not force 0):
-      * > vs >=, < vs <=, or an off-by-one in a loop bound that keeps the same
-        behavior; different but equivalent variable names; formatting.
-  - Only variable names, formatting, and exact wording may differ freely. The
-    control-flow structure must genuinely correspond for a 3.
-  - Do NOT assume consistency just because both programs solve the stated problem.
-    Compare what each one ACTUALLY does, in order."""
+IMPORTANT - how to score (worked examples for the design "sum 1..n":
+`read n; sum=0; for i=1..n: sum=sum+i; print sum"):
+
+  - `for i=1;i<=n;i++ sum+=i`  -> 3  (identical structure and details)
+  - `for i=0;i<n;i++  sum+=i`  -> 2  (same structure; only the loop BOUNDS differ,
+                                      a minor detail -- NOT a 0, even though the
+                                      sum comes out different)
+  - `for i=1;i<=n;i++ sum=i+n` -> 1  (same loop structure, but the BODY computes
+                                      the wrong thing -- a key operation is wrong)
+  - `while i>=1: sum+=i; i--`  -> 0  (counts DOWN with a while -- a different
+                                      control-flow structure, even though the final
+                                      sum is the same)
+
+  Rules:
+  - Do NOT give 0 just because the output would differ or a detail is wrong. 0 is
+    reserved for a genuinely DIFFERENT structure / approach. Wrong details on top
+    of the right structure are 1 or 2.
+  - Structure differences that DO mean 0: up-counting vs down-counting loops;
+    nested pairwise comparisons vs one combined condition; independent unchained
+    ifs vs chained else-if; a fixed-count loop vs a different while stop condition.
+  - Minor differences that stay at 2: loop bound off-by-one, > vs >=, < vs <=, one
+    missing/extra trivial step, equivalent variable names, formatting.
+  - Judge what each program ACTUALLY does, in order -- not whether both happen to
+    solve the stated problem."""
 
 THAI_GUIDE = """\
 The design may be written in Thai (the code is Java/English). Interpret Thai
@@ -71,9 +83,10 @@ ones). THEN, on the LAST line, output ONLY this JSON object (no markdown fence):
 {"dimension_findings": {"input": "match|partial|mismatch", "output": "...",
  "order": "...", "loop": "...", "condition": "...", "computation": "..."},
  "mismatches": ["..."], "final_score": <0|1|2|3>}
-Mapping: structure+steps correspond one-to-one -> 3; same structure with only
-minor differences -> 2; several real differences -> 1; different structure /
-algorithm or pervasive mismatch -> 0. final_score MUST be an integer 0-3."""
+Mapping (apply Step A then Step B): different control-flow structure -> 0; else
+one-to-one -> 3; same structure, only minor detail differences -> 2; same
+structure but a key operation/condition wrong or several differences -> 1. A wrong
+DETAIL on the right structure is 1 or 2, never 0. final_score MUST be an integer 0-3."""
 
 # Persona flavor sentences for ensemble diversity (optional).
 PERSONA_STRICT = "Grade strictly: any real difference in steps, conditions, or control-flow structure should pull the score down."
@@ -102,34 +115,36 @@ def system_prompt(persona: str | None = None) -> str:
 # so the findings must agree with the score -- never "all match" for a 0.
 _ANCHOR_TEMPLATES: dict[int, tuple[str, str]] = {
     3: (
-        "The code follows the design step by step: same inputs, same decision "
-        "structure, same order, same outputs. No real differences.",
+        "Step A: same control-flow structure as the design. Step B: every step, "
+        "condition and computation corresponds one-to-one. No real differences.",
         '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
         '"loop": "match", "condition": "match", "computation": "match"}, '
         '"mismatches": [], "final_score": 3}',
     ),
     2: (
-        "The overall structure and steps match the design; only a minor difference "
-        "remains (e.g. an operator like > vs >= or a small detail).",
+        "Step A: same control-flow structure. Step B: only a MINOR detail differs "
+        "(e.g. a loop bound or > vs >=). Even if that changes the result, a minor "
+        "detail on the right structure stays a 2 -- not a 0.",
         '{"dimension_findings": {"input": "match", "output": "match", "order": "match", '
-        '"loop": "match", "condition": "partial", "computation": "match"}, '
-        '"mismatches": ["minor operator/threshold difference"], "final_score": 2}',
+        '"loop": "partial", "condition": "match", "computation": "match"}, '
+        '"mismatches": ["minor loop-bound / operator difference"], "final_score": 2}',
     ),
     1: (
-        "Parts overlap, but several steps or conditions differ from the design, "
-        "so the correspondence is only weak.",
-        '{"dimension_findings": {"input": "match", "output": "partial", "order": "mismatch", '
-        '"loop": "match", "condition": "mismatch", "computation": "partial"}, '
-        '"mismatches": ["some steps/conditions differ from the design"], "final_score": 1}',
+        "Step A: same control-flow structure. Step B: a KEY operation in the body "
+        "is wrong (the loop matches but it computes the wrong thing), so the "
+        "correspondence is only weak -- but the structure still matches, so not 0.",
+        '{"dimension_findings": {"input": "match", "output": "partial", "order": "match", '
+        '"loop": "match", "condition": "match", "computation": "mismatch"}, '
+        '"mismatches": ["a key computation/operation differs from the design"], "final_score": 1}',
     ),
     0: (
-        "The code uses a different control-flow structure / algorithm than the "
-        "design (e.g. nested pairwise comparisons instead of the design's combined "
-        "conditions), even though the final result can look similar. Different "
+        "Step A fails: the code uses a genuinely DIFFERENT control-flow structure "
+        "than the design (e.g. a down-counting while loop instead of the design's "
+        "up-counting for loop), even though the final result is the same. Different "
         "structure = inconsistent.",
-        '{"dimension_findings": {"input": "match", "output": "mismatch", "order": "mismatch", '
-        '"loop": "mismatch", "condition": "mismatch", "computation": "mismatch"}, '
-        '"mismatches": ["different decision/control-flow structure", "different algorithm"], '
+        '{"dimension_findings": {"input": "match", "output": "match", "order": "mismatch", '
+        '"loop": "mismatch", "condition": "mismatch", "computation": "match"}, '
+        '"mismatches": ["different control-flow structure (counts down vs up)"], '
         '"final_score": 0}',
     ),
 }

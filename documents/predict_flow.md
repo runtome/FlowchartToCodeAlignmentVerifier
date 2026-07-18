@@ -65,18 +65,24 @@ Optional **personas** (`USE_PERSONAS`): `PERSONA_STRICT` / `PERSONA_LENIENT` add
 sentence to diversify votes in the ensemble. Both still treat a different structure as a
 mismatch.
 
+> **Update (calibration):** OCR is now **off by default** (`USE_OCR=False`) — the Thai Tesseract
+> output was garbage and the VLM reads Thai natively — and the **structural vote is off**
+> (`USE_STRUCTURAL_VOTE=False`); both were pushing the ensemble to 0/3. The few-shot anchors are
+> now a **curated contrastive set** (see below), and majority-vote ties break toward `2`
+> (`TIE_BREAK_TOWARD`). The `ocr:` debug line still works if you re-enable OCR.
+
 ### A.4 Few-shot anchors — calibration, not decoration
 
-`predict.build_fewshot()` reads `alignment_score_training.csv`, prefers pseudocode (text-only)
-cases, and picks the first case for each distinct score up to `N_FEWSHOT` (=4, i.e. one per
-level). `build_fewshot_messages()` renders each as a user turn (design + Java + hint) followed
-by a demonstration answer drawn from `_ANCHOR_TEMPLATES[score]`.
+`predict.build_fewshot()` uses a **curated contrastive set** (`config.FEWSHOT_CASE_IDS` =
+`case_17, case_20, case_18, case_16`) — four real train cases from the *same* "sum 1..n" problem
+scored 0/1/2/3. Since the design is identical across them, the anchors isolate the calibration
+that matters: a **down-counting loop → 0**, a **wrong loop body → 1**, a **wrong loop bound → 2**,
+an **exact match → 3**. Each renders as a user turn (pseudocode design + Java + hint) followed by
+a score-appropriate reasoning + JSON demonstration from `_ANCHOR_TEMPLATES[score]`.
 
-The templates are **score-consistent** — a 0 shows `mismatch` findings and a "different
-control-flow structure" note; a 3 shows all `match`. (A prior bug showed *all-match for every
-score*, which taught the model to ignore differences; that is fixed.) Because the score-0 case
-found first is `case_01`, the model sees the canonical nested-vs-combined structural mismatch
-as its 0 anchor.
+These four anchor cases are **excluded from `--validate` accuracy**
+(`EXCLUDE_FEWSHOT_FROM_VALIDATION`) so they aren't scored trivially; the real test set (case_34+)
+never overlaps them.
 
 ### A.5 Per-case turn
 
@@ -231,14 +237,15 @@ Pair it with `ALIGN_DEBUG_OCR=1` to see both the OCR text and the resulting Merm
 
 | Toggle (`config.py`) | Default | Affects |
 |---|---|---|
-| `USE_OCR` | `True` | Whether `ocr_flowchart` runs and its text is added to the prompt. |
+| `USE_OCR` | `False` | OCR augmentation off (Thai output garbage/redundant). |
 | `DEBUG_OCR` / `ALIGN_DEBUG_OCR` | `False` / `0` | Print `ocr:<case>/flowchart.png : "…"` per file. |
 | `USE_BASELINE_A` | `True` | Direct image / text judge (Part A). |
 | `USE_BASELINE_B` | `True` | Mermaid two-stage judge, flowchart only (Part C). |
-| `USE_STRUCTURAL_VOTE` | `True` | Add the rule-based estimate as one vote. |
+| `USE_STRUCTURAL_VOTE` | `False` | Rule-based vote off (skewed to 0/3). |
 | `SAMPLES_PER_BASELINE` | `2` | Sampled votes per baseline (+ its greedy vote). |
+| `TIE_BREAK_TOWARD` | `2` | Ties in the majority vote break toward this score. |
+| `FEWSHOT_CASE_IDS` | sum group | Real contrastive anchors (scores 0/1/2/3). |
 | `DEBUG_MERMAID` / `ALIGN_DEBUG_MERMAID` | `False` / `0` | Print the generated Mermaid per case. |
-| `USE_FEWSHOT` / `N_FEWSHOT` | `True` / `4` | Calibrated anchors (aim: one per score level). |
 | `USE_PERSONAS` | `False` | Adds strict/lenient votes to Baseline A. |
 | `TWO_PASS` | `False` | Deprecated — superseded by `USE_BASELINE_B`. |
 

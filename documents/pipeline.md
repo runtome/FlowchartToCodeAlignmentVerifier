@@ -159,10 +159,14 @@ comparison core — decoupling vision errors from grading.
 
 ### 4.5 Few-shot anchors — `predict.build_fewshot`
 
-Reads `alignment_score_training.csv`, walks it preferring pseudocode (text-only) cases, and
-selects the **first case it finds for each distinct score** (0/1/2/3), up to `N_FEWSHOT`.
-Each anchor renders as a user turn (design + Java + hint) followed by a minimal correct JSON
-answer, teaching both the rubric mapping and the output shape.
+Uses a **curated contrastive set** (`config.FEWSHOT_CASE_IDS`): four real train cases from the
+*same* problem (the "sum 1..n" group) whose Java scores 0/1/2/3 respectively. Because the design
+is identical across them, the anchors teach the model that the score is driven by **Java
+fidelity**, and calibrate the crucial boundaries — a wrong loop bound is a 2, a wrong loop body
+is a 1, a down-counting loop is a 0. Each anchor renders as a user turn (pseudocode design +
+Java + hint) followed by a score-appropriate reasoning + JSON demonstration. During `--validate`
+these anchor cases are excluded from the accuracy (`EXCLUDE_FEWSHOT_FROM_VALIDATION`) to avoid
+leakage; at test time (case_34+) there is none.
 
 ### 4.6 The model wrapper — `predict.Judge`
 
@@ -231,11 +235,13 @@ fences, extra prose, and minor JSON breakage.
 | `LOAD_IN_4BIT` | `False` | 4-bit quantized load if fp16 OOMs. |
 | `USE_BASELINE_A` | `True` | Direct image (flowchart) / text (pseudocode) judge. |
 | `USE_BASELINE_B` | `True` | Two-stage: image → Mermaid → judge (flowchart only). |
-| `USE_STRUCTURAL_VOTE` | `True` | Add the rule-based estimate as one ensemble vote. |
+| `USE_STRUCTURAL_VOTE` | `False` | Rule-based vote (off — it skewed the vote to 0/3). |
 | `SAMPLES_PER_BASELINE` | `2` | Sampled votes per baseline (on top of its greedy vote). |
+| `TIE_BREAK_TOWARD` | `2` | Ties in the majority vote break toward this score. |
+| `FEWSHOT_CASE_IDS` | sum group | Real contrastive anchor cases (scores 0/1/2/3). |
 | `DEBUG_MERMAID` / `ALIGN_DEBUG_MERMAID` | `False` / `0` | Print the generated Mermaid per case. |
 | `N_SAMPLES` / `SAMPLE_TEMPERATURE` | `5` / `0.7` | Self-consistency (non-ensemble path). |
-| `USE_OCR` | `True` | Add detected flowchart text to the prompt. |
+| `USE_OCR` | `False` | OCR augmentation (off — Thai output was garbage/redundant). |
 | `DEBUG_OCR` / `ALIGN_DEBUG_OCR` (env) | `False` / `0` | Print `ocr:<case>/flowchart.png : "…"` per file. |
 | `TWO_PASS` | `False` | Transcribe flowchart → text, then score. |
 | `USE_FEWSHOT` / `N_FEWSHOT` | `True` / `4` | Labeled anchors per prompt (aim one per score level). |
@@ -249,9 +255,16 @@ fences, extra prose, and minor JSON breakage.
 ```bash
 # Local (or any machine with the data + a GPU)
 python predict.py --validate --dry-run 4   # sanity check, verbose
-python predict.py --validate               # train accuracy % + confusion matrix
+python predict.py --validate               # train accuracy % + within-1 + confusion matrix
+python predict.py --validate --baseline A  # measure a single config: A | B | AB
+python predict.py --validate --baseline B
+python predict.py --validate --baseline AB
 python predict.py                          # full submission -> submission.csv
 ```
+
+`--baseline {A,B,AB}` overrides the ensemble toggles for one run so you can compare Baseline A
+(image), Baseline B (Mermaid), and A+B on the train set and keep the winner. The validation
+summary also prints **within-±1 accuracy** and the **majority-class prior** (the bar to beat).
 
 On Kaggle (GPU T4 ×2, Internet On) `notebook.ipynb` clones the repo, installs
 `transformers accelerate qwen-vl-utils javalang`, and runs the same commands. The model
