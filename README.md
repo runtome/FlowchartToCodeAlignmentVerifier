@@ -11,7 +11,7 @@ no commercial APIs, no hard-coded answers.
 
 ## Approach
 
-A single **Qwen2.5-VL-7B-Instruct** grades each case with a rubric-grounded
+A single **Qwen3-VL-8B-Instruct** (swappable to 4B or Qwen2.5-VL) grades each case with a rubric-grounded
 chain-of-check prompt (summarize Java → summarize design → compare 6 dimensions →
 emit strict JSON with `final_score`). **Self-consistency majority voting** stabilizes
 the output, which is what the exact-match metric rewards. Robust JSON parsing with a
@@ -65,8 +65,11 @@ In the notebook sidebar: **Accelerator = GPU T4 x2**, **Internet = On**. Then ru
 !python predict.py                # writes /kaggle/working/submission.csv
 ```
 
-The model (`Qwen/Qwen2.5-VL-7B-Instruct`, ~16 GB) downloads from Hugging Face on the
-first call. No API keys and no attached-model step needed.
+The model (`Qwen/Qwen3-VL-8B-Instruct`, ~16 GB) downloads from Hugging Face on the
+first call and splits across the two T4s. No API keys and no attached-model step needed.
+Switch models by editing `config.MODEL_DIR` or setting `ALIGN_MODEL_DIR` (e.g.
+`Qwen/Qwen3-VL-4B-Instruct` for a lighter single-GPU run). Qwen3-VL needs
+`transformers >= 4.57` — the notebook's `pip install -U transformers` handles it.
 
 Local runs work the same way:
 

@@ -121,11 +121,32 @@ class Judge:
     def __init__(self) -> None:
         import torch
         from transformers import AutoProcessor
-        try:
-            from transformers import Qwen2_5_VLForConditionalGeneration as VLModel
-        except Exception:  # older transformers
-            from transformers import Qwen2VLForConditionalGeneration as VLModel
 
+        # Resolve the model class from whatever MODEL_DIR points at. The Auto class
+        # covers Qwen3-VL, Qwen2.5-VL, and Qwen2-VL uniformly; fall back to the
+        # explicit classes for older transformers builds.
+        def _resolve_model_class():
+            try:
+                from transformers import AutoModelForImageTextToText
+                return AutoModelForImageTextToText
+            except Exception:
+                pass
+            for name in (
+                "Qwen3VLForConditionalGeneration",
+                "Qwen2_5_VLForConditionalGeneration",
+                "Qwen2VLForConditionalGeneration",
+            ):
+                try:
+                    import transformers
+                    return getattr(transformers, name)
+                except Exception:
+                    continue
+            raise ImportError(
+                "No Qwen-VL model class found. Upgrade transformers: "
+                "pip install -U transformers  (Qwen3-VL needs >= 4.57)."
+            )
+
+        VLModel = _resolve_model_class()
         self.torch = torch
         dtype = getattr(torch, C.TORCH_DTYPE)
 

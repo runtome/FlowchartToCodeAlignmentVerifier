@@ -58,7 +58,13 @@ SUBMISSION_PATH = OUTPUT_DIR / "submission.csv"
 # With internet ON (default), MODEL_DIR is a Hugging Face repo id and the weights
 # download on first use. For an offline run, set OFFLINE=1 and point MODEL_DIR at
 # a local snapshot folder (the one containing config.json).
-MODEL_DIR = os.environ.get("ALIGN_MODEL_DIR", "Qwen/Qwen2.5-VL-7B-Instruct")
+#
+# Model options (the loader auto-detects the class):
+#   "Qwen/Qwen3-VL-8B-Instruct"    <- default; better OCR/reasoning, splits over 2x T4
+#   "Qwen/Qwen3-VL-4B-Instruct"    <- lighter, comfortable on a single T4
+#   "Qwen/Qwen2.5-VL-7B-Instruct"  <- previous model
+# Qwen3-VL needs a recent transformers (>= 4.57): pip install -U transformers.
+MODEL_DIR = os.environ.get("ALIGN_MODEL_DIR", "Qwen/Qwen3-VL-8B-Instruct")
 
 # Internet on by default. Set ALIGN_OFFLINE=1 to force HF offline mode.
 OFFLINE = os.environ.get("ALIGN_OFFLINE", "0") == "1"
