@@ -52,6 +52,13 @@ JAVA_NAME = "solution.java"
 OUTPUT_DIR = Path(os.environ.get("ALIGN_OUTPUT_DIR", "/kaggle/working"))
 SUBMISSION_PATH = OUTPUT_DIR / "submission.csv"
 
+# Disk cache for Stage-1 flowchart->Mermaid transcriptions (see INCREMENT 4).
+# Perception runs once, saves here; the judge stage reads the text back so the
+# image and the heavy few-shot never coexist in one forward pass (avoids OOM).
+MERMAID_CACHE_PATH = Path(
+    os.environ.get("ALIGN_MERMAID_CACHE", str(OUTPUT_DIR / "mermaid_cache.json"))
+)
+
 # --------------------------------------------------------------------------- #
 # Model
 # --------------------------------------------------------------------------- #
@@ -72,13 +79,16 @@ OFFLINE = os.environ.get("ALIGN_OFFLINE", "0") == "1"
 # T4 = Turing: no bfloat16, no FlashAttention-2.
 TORCH_DTYPE = "float16"
 ATTN_IMPLEMENTATION = "sdpa"        # "eager" if sdpa misbehaves on old transformers
-LOAD_IN_4BIT = False                # flip to True (bitsandbytes) if fp16 OOMs with images
-# Leave head-room on each 16 GB T4 for the KV-cache + image tokens.
-MAX_MEMORY = {0: "14GiB", 1: "14GiB"}
+LOAD_IN_4BIT = False                # flip to True (bitsandbytes, ~5 GB) if fp16 still OOMs
+# Leave more head-room on each 16 GB T4 for activations + KV-cache + image tokens.
+# The 8B weights nearly fill both T4s; 13 GiB/GPU keeps ~1.5 GB free for the forward pass.
+MAX_MEMORY = {0: "13GiB", 1: "13GiB"}
 
 # Qwen-VL visual token budget (multiples of 28*28 per patch). Caps OOM risk.
+# Flowcharts are simple line diagrams, so 768 patches is plenty and roughly halves
+# the visual-token activation memory vs 1280.
 MIN_PIXELS = 256 * 28 * 28
-MAX_PIXELS = 1280 * 28 * 28
+MAX_PIXELS = 768 * 28 * 28
 
 # --------------------------------------------------------------------------- #
 # Decoding / self-consistency
@@ -100,8 +110,10 @@ SAMPLE_TOP_P = 0.9
 # For a flowchart case the final score is a majority vote over A, B, and the
 # rule-based structural estimate. For a pseudocode case there is no image, so A
 # and B collapse into one text judge (no Mermaid stage).
-USE_BASELINE_A = True        # direct image (flowchart) / text (pseudocode) judge
-USE_BASELINE_B = True        # two-stage: transcribe flowchart to Mermaid, then judge
+USE_BASELINE_A = True        # text judge for PSEUDOCODE (always the only vote source there)
+USE_BASELINE_B = True        # flowchart: judge the cached Mermaid transcription (text-only)
+USE_IMAGE_JUDGE = False      # flowchart direct-IMAGE judge. OFF: image + few-shot in one prefill
+                             # is what OOMs the 8B on T4. Flowcharts rely on Baseline B (Mermaid).
 USE_STRUCTURAL_VOTE = False  # OFF: the rule estimate maps to 0/3 and skews the vote to extremes
 SAMPLES_PER_BASELINE = 2     # sampled votes per baseline on top of its greedy vote (balanced)
 DEBUG_MERMAID = os.environ.get("ALIGN_DEBUG_MERMAID", "0") == "1"  # print Mermaid per case
@@ -136,6 +148,10 @@ DEFAULT_FALLBACK_SCORE = 1  # used only if every parse + retry fails
 # Internet-on by default; only force offline mode when explicitly requested.
 # --------------------------------------------------------------------------- #
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+# Reduce CUDA fragmentation on the T4s (the OOM error itself flagged ~0.5 GB
+# reserved-but-unallocated). Must be set before torch initializes CUDA; config is
+# imported before predict.py loads torch, so this takes effect.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 if OFFLINE:
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"

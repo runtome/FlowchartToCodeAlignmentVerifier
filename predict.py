@@ -260,6 +260,25 @@ def _collect_votes(judge, build_msgs, n_samples, *, tag="", verbose=False):
     return votes, greedy
 
 
+def _run_judge(judge, build_for_persona, personas, *, verbose, tag):
+    """Collect votes for one judge path across the configured personas (only the
+    base persona is sampled; extra personas contribute a single greedy vote).
+    Returns (votes, greedy_of_first_persona)."""
+    votes: list[int] = []
+    greedy: int | None = None
+    for persona in personas:
+        n = C.SAMPLES_PER_BASELINE if persona is None else 0
+        ptag = "base" if persona is None else "persona"
+        v, g = _collect_votes(
+            judge, lambda p=persona: build_for_persona(p), n,
+            tag=f"{tag}/{ptag}", verbose=verbose,
+        )
+        votes += v
+        if greedy is None:
+            greedy = g
+    return votes, greedy
+
+
 def _majority(votes: list[int], prefer: int | None) -> int:
     """Most common vote. Ties break toward the tied value nearest
     `C.TIE_BREAK_TOWARD` (a gentle middle bias); among values equally near, toward
@@ -278,7 +297,63 @@ def _majority(votes: list[int], prefer: int | None) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Scoring one case — ensemble of Baseline A + Baseline B + structural vote
+# Stage 1 (perception): flowchart -> Mermaid, cached to disk
+# --------------------------------------------------------------------------- #
+def build_mermaid_cache(judge: "Judge", case_ids: list[str]) -> dict[str, str]:
+    """Transcribe each flowchart case to Mermaid ONCE and persist to disk, so the
+    judge stage reads text instead of re-running the image model. Keeping the image
+    out of the judge prefill (where the heavy few-shot lives) is what avoids the T4
+    OOM. Cached cases are skipped, so a judge-stage crash never re-does Stage 1."""
+    cache: dict[str, str] = {}
+    if C.MERMAID_CACHE_PATH.exists():
+        try:
+            cache = json.loads(C.MERMAID_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cache = {}
+
+    todo = [c for c in dict.fromkeys(case_ids) if c not in cache]
+    if not todo:
+        return cache
+
+    print(f"[stage 1/perception] transcribing {len(todo)} flowchart(s) to Mermaid ...")
+    for case_id in todo:
+        try:
+            case_dir = find_case_dir(case_id)
+        except FileNotFoundError:
+            print(f"  (skip {case_id}: folder not found)")
+            continue
+        fpath = flowchart_path(case_dir)
+        if not fpath.exists():
+            cache[case_id] = ""
+            continue
+        image = preprocess_flowchart(fpath)
+        ocr_text = ocr_flowchart(image) if C.USE_OCR else ""
+        mermaid = P.extract_mermaid(
+            judge.generate(P.flowchart_to_mermaid_turn(image, ocr_text), sample=False)
+        )
+        cache[case_id] = mermaid
+        if C.DEBUG_MERMAID:
+            flat = " ; ".join(l.strip() for l in mermaid.splitlines() if l.strip())
+            print(f'mermaid:{case_id}/{C.FLOWCHART_NAME} : "{flat[:400] or "<empty>"}"')
+
+    C.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        C.MERMAID_CACHE_PATH.write_text(
+            json.dumps(cache, ensure_ascii=False, indent=0), encoding="utf-8"
+        )
+    except Exception as e:  # cache is an optimization; never fail the run over it
+        print(f"  (warning: could not write mermaid cache: {e})")
+
+    # Release the vision-tower activations before the (text-only) judge stage.
+    try:
+        judge.torch.cuda.empty_cache()
+    except Exception:
+        pass
+    return cache
+
+
+# --------------------------------------------------------------------------- #
+# Scoring one case — judge votes (Mermaid for flowcharts, text for pseudocode)
 # --------------------------------------------------------------------------- #
 def score_case(
     judge: Judge,
@@ -286,6 +361,7 @@ def score_case(
     *,
     representation_type: str,
     case_dir: Path,
+    mermaid_by_case: dict[str, str] | None = None,
     verbose: bool = False,
 ) -> int:
     java_code = read_java(case_dir)
@@ -293,66 +369,69 @@ def score_case(
     design_text_for_fallback = read_pseudo(case_dir)
 
     is_flow = representation_type == "flowchart"
-    image = None
-    ocr_text = ""
-    pseudo_text = ""
-
-    if is_flow:
-        image = preprocess_flowchart(flowchart_path(case_dir))
-        if C.USE_OCR:
-            ocr_text = ocr_flowchart(image)
-            design_text_for_fallback = ocr_text or design_text_for_fallback
-            if C.DEBUG_OCR:
-                flat = " | ".join(t.strip() for t in ocr_text.splitlines() if t.strip())
-                print(f'ocr:{case_dir.name}/{C.FLOWCHART_NAME} : "{flat or "<empty — no OCR engine or no text>"}"')
-    else:
-        pseudo_text = read_pseudo(case_dir)
-        design_text_for_fallback = pseudo_text or design_text_for_fallback
+    personas = [None, P.PERSONA_STRICT, P.PERSONA_LENIENT] if C.USE_PERSONAS else [None]
 
     votes: list[int] = []
     greedy_ref: int | None = None
 
-    personas = [None, P.PERSONA_STRICT, P.PERSONA_LENIENT] if C.USE_PERSONAS else [None]
+    if is_flow:
+        mermaid = (mermaid_by_case or {}).get(case_dir.name, "")
 
-    # ---- Baseline A: direct image (flowchart) or text (pseudocode) judge ----
-    if C.USE_BASELINE_A:
-        for persona in personas:
-            n = C.SAMPLES_PER_BASELINE if persona is None else 0  # sample only the base persona
-            v, g = _collect_votes(
+        # ---- Baseline B: judge the cached Mermaid transcription (text-only) ----
+        if C.USE_BASELINE_B and mermaid:
+            v, g = _run_judge(
                 judge,
-                lambda p=persona: P.build_messages(
-                    representation_type=representation_type, java_code=java_code,
-                    java_hint=java_hint, image=image, pseudo_text=pseudo_text,
-                    ocr_text=ocr_text, fewshot=fewshot, persona=p,
-                ),
-                n, tag=f"A/{persona or 'base'}", verbose=verbose,
-            )
-            votes += v
-            if greedy_ref is None:
-                greedy_ref = g
-
-    # ---- Baseline B: image -> Mermaid -> judge (flowchart cases only) ----
-    if C.USE_BASELINE_B and is_flow:
-        mermaid = P.extract_mermaid(
-            judge.generate(P.flowchart_to_mermaid_turn(image, ocr_text), sample=False)
-        )
-        if C.DEBUG_MERMAID:
-            flat = " ; ".join(l.strip() for l in mermaid.splitlines() if l.strip())
-            print(f'mermaid:{case_dir.name}/{C.FLOWCHART_NAME} : "{flat[:400] or "<empty>"}"')
-        if mermaid:
-            v, g = _collect_votes(
-                judge,
-                lambda: P.build_messages(
+                lambda p: P.build_messages(
                     representation_type="flowchart", java_code=java_code,
-                    java_hint=java_hint, mermaid_text=mermaid, fewshot=fewshot,
+                    java_hint=java_hint, mermaid_text=mermaid, fewshot=fewshot, persona=p,
                 ),
-                C.SAMPLES_PER_BASELINE, tag="B/mermaid", verbose=verbose,
+                personas, verbose=verbose, tag="B/mermaid",
             )
             votes += v
             if greedy_ref is None:
                 greedy_ref = g
 
-    # ---- Structural check: one rule-based vote ----
+        # ---- Direct IMAGE judge: optional (off by default), and the per-case
+        #      fallback when the Mermaid transcription came back empty so no row is
+        #      lost. This is the only path that puts an image in the judge prefill.
+        if C.USE_IMAGE_JUDGE or (C.USE_BASELINE_B and not mermaid):
+            image = preprocess_flowchart(flowchart_path(case_dir))
+            ocr_text = ""
+            if C.USE_OCR:
+                ocr_text = ocr_flowchart(image)
+                design_text_for_fallback = ocr_text or design_text_for_fallback
+                if C.DEBUG_OCR:
+                    flat = " | ".join(t.strip() for t in ocr_text.splitlines() if t.strip())
+                    print(f'ocr:{case_dir.name}/{C.FLOWCHART_NAME} : "{flat or "<empty — no OCR engine or no text>"}"')
+            v, g = _run_judge(
+                judge,
+                lambda p: P.build_messages(
+                    representation_type="flowchart", java_code=java_code,
+                    java_hint=java_hint, image=image, ocr_text=ocr_text, fewshot=fewshot, persona=p,
+                ),
+                personas, verbose=verbose, tag="A/image",
+            )
+            votes += v
+            if greedy_ref is None:
+                greedy_ref = g
+    else:
+        # ---- Pseudocode: text judge (its only vote source) ----
+        pseudo_text = read_pseudo(case_dir)
+        design_text_for_fallback = pseudo_text or design_text_for_fallback
+        if C.USE_BASELINE_A:
+            v, g = _run_judge(
+                judge,
+                lambda p: P.build_messages(
+                    representation_type="pseudocode", java_code=java_code,
+                    java_hint=java_hint, pseudo_text=pseudo_text, fewshot=fewshot, persona=p,
+                ),
+                personas, verbose=verbose, tag="A/pseudo",
+            )
+            votes += v
+            if greedy_ref is None:
+                greedy_ref = g
+
+    # ---- Structural check: one rule-based vote (off by default) ----
     if C.USE_STRUCTURAL_VOTE:
         struct = fallback_score_from_signals(java_code, design_text_for_fallback)
         votes.append(struct)
@@ -397,6 +476,13 @@ def run_submission(
     ids = pd.read_csv(C.ID_DEFINITION_CSV)
     ids.columns = [c.strip().lower() for c in ids.columns]  # Id/Case_id/Representation_type
     ids = _limit_rows(ids, dry_run, random_sample, seed)
+
+    # Stage 1: transcribe every flowchart in the frame to Mermaid (cached to disk).
+    flow_ids = [str(r["case_id"]) for _, r in ids.iterrows()
+                if str(r["representation_type"]).strip().lower() == "flowchart"]
+    mermaid_cache = build_mermaid_cache(judge, flow_ids)
+
+    # Stage 2: judge from cached text (flowcharts) / pseudocode text.
     rows = []
     n = len(ids)
     for i, (_, row) in enumerate(ids.iterrows()):
@@ -405,7 +491,7 @@ def run_submission(
         case_dir = find_case_dir(case_id)
         score = score_case(
             judge, fewshot, representation_type=rep, case_dir=case_dir,
-            verbose=dry_run is not None,
+            mermaid_by_case=mermaid_cache, verbose=dry_run is not None,
         )
         rows.append({"Id": int(row["id"]), "Alignment_score": int(score)})
         print(f"[{i+1}/{n}] {case_id} ({rep}) -> {score}")
@@ -425,6 +511,13 @@ def run_validation(
         df = df[~df["case_id"].isin(skip)]
         print(f"(excluding {len(skip)} few-shot anchor case(s) from accuracy: {sorted(skip)})")
     df = _limit_rows(df, dry_run, random_sample, seed)
+
+    # Stage 1: transcribe every flowchart in the frame to Mermaid (cached to disk).
+    flow_ids = [str(r["case_id"]) for _, r in df.iterrows()
+                if str(r["representation_type"]).strip().lower() == "flowchart"]
+    mermaid_cache = build_mermaid_cache(judge, flow_ids)
+
+    # Stage 2: judge from cached text (flowcharts) / pseudocode text.
     y_true, y_pred, y_rep = [], [], []
     for _, row in df.iterrows():
         case_id = str(row["case_id"])
@@ -434,7 +527,8 @@ def run_validation(
         except FileNotFoundError:
             print(f"  (skip {case_id}: folder not found)")
             continue
-        pred = score_case(judge, fewshot, representation_type=rep, case_dir=case_dir)
+        pred = score_case(judge, fewshot, representation_type=rep, case_dir=case_dir,
+                          mermaid_by_case=mermaid_cache)
         t = int(row["alignment_score"])
         y_true.append(t)
         y_pred.append(int(pred))
@@ -479,13 +573,14 @@ def main() -> None:
     ap.add_argument("--random", action="store_true", help="with --dry-run, pick random cases (folders) instead of the first ones")
     ap.add_argument("--seed", type=int, default=None, help="seed for --random (reproducible sampling)")
     ap.add_argument("--baseline", choices=["A", "B", "AB"], default=None,
-                    help="override baselines for this run: A=image only, B=Mermaid only, AB=both")
+                    help="flowchart judge for this run: A=direct image, B=cached Mermaid, AB=both "
+                         "(A/AB re-enable the image judge and may OOM the 8B on T4)")
     args = ap.parse_args()
 
-    if args.baseline:  # override config for an A / B / A+B measurement run
-        C.USE_BASELINE_A = args.baseline in ("A", "AB")
+    if args.baseline:  # override the flowchart judge path for an ablation run
+        C.USE_IMAGE_JUDGE = args.baseline in ("A", "AB")
         C.USE_BASELINE_B = args.baseline in ("B", "AB")
-        print(f"[baseline override] A={C.USE_BASELINE_A} B={C.USE_BASELINE_B}")
+        print(f"[baseline override] image_judge={C.USE_IMAGE_JUDGE} mermaid_B={C.USE_BASELINE_B}")
 
     fewshot = build_fewshot()
     judge = Judge()
