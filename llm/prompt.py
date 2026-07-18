@@ -22,10 +22,15 @@ You grade how well a program DESIGN (a flowchart or pseudocode) matches a Java
 SOLUTION, on this 0-3 scale. Decide it in TWO steps:
 
   STEP A - Is the control-flow STRUCTURE the same overall approach?
-    (same kind of loop going the same direction, the same decision structure,
-     the same order of operations). This sets the floor:
-       - different structure / approach  -> score 0
-       - same structure                  -> score is 1, 2, or 3 (go to Step B)
+    Same kind of loop going the same direction; the same DECISION SHAPE; the same
+    order of operations. DECISION SHAPE is structural: a FLAT chain of else-if
+    tests (if C1 ... else if C2 ... else ...) is a DIFFERENT structure from a
+    NESTED decision tree (if X { if Y ... } else { if Z ... }); and ONE combined
+    boolean test (a>=b AND a>=c) is a DIFFERENT decomposition from two separate
+    nested tests that reach the same branch -- even when both compute the same
+    result and mention the same variables. This sets the floor:
+       - different structure / decision shape / approach -> score 0
+       - same structure                                  -> score 1, 2, or 3 (Step B)
 
   STEP B - Given the same structure, LIST the concrete differences between the
     design and the Java (each one names the design element vs the Java element),
@@ -58,6 +63,16 @@ IMPORTANT - how to score (worked examples for the design "sum 1..n":
                                       control-flow structure, even though the final
                                       sum is the same)
 
+  More worked examples for the design "max of a,b,c" (a FLAT chain: if a>=b AND
+  a>=c print a; else if b>=a AND b>=c print b; else print c):
+  - flat chain, same combined conditions, >= throughout          -> 3
+  - flat chain, same shape, but > used instead of >= throughout  -> 2  (ONE minor
+        KIND of difference applied consistently -- still one MINOR, not many)
+  - NESTED tree `if a>b { if a>c print a else print c } else { if b>c print b
+        else print c }`                                          -> 0  (the
+        DECISION SHAPE differs: nested tree vs flat chain of combined conditions,
+        even though it also returns the maximum)
+
   HOW TO SCORE 1 vs 2 vs 3 -- build a DIFFERENCE LEDGER, then count:
   - Walk the design and the Java in parallel and write down every CONCRETE
     difference as "design X vs java Y" (a specific element on each side).
@@ -70,17 +85,23 @@ IMPORTANT - how to score (worked examples for the design "sum 1..n":
              uses n%2; design min=weights[0] but Java min=0), a wrong operator that
              changes the operation (+ vs *, && vs ||), a missing computation, a
              branch that leads somewhere different.
-  - Map: 0 differences -> 3;  exactly 1 MINOR and 0 KEY -> 2;  any KEY, or >= 2
-    differences of any kind -> 1;  different control-flow structure -> 0.
+  - Count DISTINCT KINDS of differences, NOT textual occurrences. If ONE change
+    recurs consistently (every >= became >, every i became j), that is ONE
+    difference of that kind -- do NOT inflate it to ">= 2 -> 1". A single minor
+    kind applied throughout is still one MINOR -> 2.
+  - Map: 0 differences -> 3;  exactly 1 MINOR kind and 0 KEY -> 2;  any KEY, or
+    >= 2 DISTINCT KINDS of difference -> 1;  different control-flow structure -> 0.
   - Do NOT invent differences. Only list one you can point to concretely on BOTH
     sides. Ignore variable names, formatting, comments, Thai vs English wording,
     and provably-equivalent expressions -- those are NOT differences. If after this
     the ledger is empty, the score is 3 (do not hedge down to 2).
   - Do NOT give 0 just because the output would differ or a detail is wrong. 0 is
     reserved for a genuinely DIFFERENT structure / approach.
-  - Structure differences that DO mean 0: up-counting vs down-counting loops;
-    nested pairwise comparisons vs one combined condition; independent unchained
-    ifs vs chained else-if; a fixed-count loop vs a different while stop condition.
+  - Structure differences that DO mean 0 (Step A, checked BEFORE the ledger): a
+    NESTED decision tree vs a FLAT chain of else-if; one combined boolean test vs
+    two separate nested tests reaching the same branch; up-counting vs
+    down-counting loops; independent unchained ifs vs chained else-if; a
+    fixed-count loop vs a different while stop condition.
   - Judge what each program ACTUALLY does, in order -- not whether both happen to
     solve the stated problem."""
 
